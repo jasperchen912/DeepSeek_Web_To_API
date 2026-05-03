@@ -237,6 +237,7 @@ func (h *Handler) prepareChatStreamRuntime(w http.ResponseWriter, resp *http.Res
 		len(toolNames) > 0, h.toolcallFeatureMatchEnabled() && h.toolcallEarlyEmitHighConfidence(),
 	)
 	streamRuntime.refFileTokens = refFileTokens
+	streamRuntime.sendRoleStart()
 	return streamRuntime, initialType, true
 }
 

@@ -124,6 +124,10 @@ OpenAI 支持规范 `/v1/*`、根路径别名和 `/v1/v1/*` 兜底。Claude 支�
 
 工具调用以“尽量接受、严格输出”为目标：对常见 DSML/XML/JSON 形态做解析和窄修复，流式阶段通过 sieve 防止工具标签泄漏到普通文本。
 
+### OpenAI Chat 流式响应
+
+Chat Completions 流式响应在上游 DeepSeek 请求返回 200 后，会先发送一个 OpenAI 兼容的 `role=assistant` 起始 chunk，降低客户端看到首个 SSE data frame 的等待时间。若 DeepSeek 正在输出内部 thinking 且当前请求不暴露 `reasoning_content`，服务端会发送 `: thinking` SSE comment heartbeat；该注释不会进入 OpenAI JSON delta，但可以让代理、网关和客户端在隐藏 thinking 阶段观察到连接仍有进展。
+
 **章节来源**
 - [internal/server/router.go](file://internal/server/router.go)
 - [internal/config/models.go](file://internal/config/models.go)

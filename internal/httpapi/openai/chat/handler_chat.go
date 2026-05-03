@@ -251,6 +251,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 		emitEarlyToolDeltas,
 	)
 	streamRuntime.refFileTokens = refFileTokens
+	streamRuntime.sendRoleStart()
 
 	streamengine.ConsumeSSE(streamengine.ConsumeConfig{
 		Context:             r.Context(),

@@ -322,10 +322,10 @@ func TestChatCompletionsStreamEmitsFailureFrameWhenUpstreamOutputEmpty(t *testin
 	if !done {
 		t.Fatalf("expected [DONE], body=%s", rec.Body.String())
 	}
-	if len(frames) != 1 {
-		t.Fatalf("expected one failure frame, got %#v body=%s", frames, rec.Body.String())
+	if len(frames) == 0 {
+		t.Fatalf("expected failure frame, got %#v body=%s", frames, rec.Body.String())
 	}
-	last := frames[0]
+	last := frames[len(frames)-1]
 	statusCode, ok := last["status_code"].(float64)
 	if !ok || int(statusCode) != http.StatusTooManyRequests {
 		t.Fatalf("expected status_code=429, got %#v body=%s", last["status_code"], rec.Body.String())
@@ -384,6 +384,15 @@ func TestChatCompletionsStreamRetriesEmptyOutputOnSameSession(t *testing.T) {
 	}
 	if len(frames) < 2 {
 		t.Fatalf("expected role/content and finish frames, got %#v body=%s", frames, rec.Body.String())
+	}
+	firstChoices, _ := frames[0]["choices"].([]any)
+	if len(firstChoices) != 1 {
+		t.Fatalf("expected one choice in first frame, got %#v body=%s", frames[0], rec.Body.String())
+	}
+	firstChoice, _ := firstChoices[0].(map[string]any)
+	firstDelta, _ := firstChoice["delta"].(map[string]any)
+	if asString(firstDelta["role"]) != "assistant" || asString(firstDelta["content"]) != "" {
+		t.Fatalf("expected first stream frame to be role-only, got %#v body=%s", firstDelta, rec.Body.String())
 	}
 	id := asString(frames[0]["id"])
 	for _, frame := range frames[1:] {

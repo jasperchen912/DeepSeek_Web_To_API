@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	openaifmt "DeepSeek_Web_To_API/internal/format/openai"
 	"DeepSeek_Web_To_API/internal/sse"
@@ -31,6 +32,7 @@ type chatStreamRuntime struct {
 	requireToolCall       bool
 
 	firstChunkSent       bool
+	hiddenThinkingPulse  time.Time
 	bufferToolContent    bool
 	emitEarlyToolDeltas  bool
 	toolCallsEmitted     bool
@@ -54,6 +56,8 @@ type chatStreamRuntime struct {
 	finalErrorMessage string
 	finalErrorCode    string
 }
+
+const hiddenThinkingHeartbeatInterval = time.Second
 
 type chatDeltaBatch struct {
 	runtime *chatStreamRuntime
@@ -129,6 +133,19 @@ func (s *chatStreamRuntime) sendKeepAlive() {
 	_ = s.rc.Flush()
 }
 
+func (s *chatStreamRuntime) sendHiddenThinkingHeartbeat() {
+	if !s.canFlush {
+		return
+	}
+	now := time.Now()
+	if !s.hiddenThinkingPulse.IsZero() && now.Sub(s.hiddenThinkingPulse) < hiddenThinkingHeartbeatInterval {
+		return
+	}
+	s.hiddenThinkingPulse = now
+	_, _ = s.w.Write([]byte(": thinking\n\n"))
+	_ = s.rc.Flush()
+}
+
 func (s *chatStreamRuntime) sendChunk(v any) {
 	b, _ := json.Marshal(v)
 	_, _ = s.w.Write([]byte("data: "))
@@ -137,6 +154,20 @@ func (s *chatStreamRuntime) sendChunk(v any) {
 	if s.canFlush {
 		_ = s.rc.Flush()
 	}
+}
+
+func (s *chatStreamRuntime) sendRoleStart() {
+	if s.firstChunkSent {
+		return
+	}
+	s.firstChunkSent = true
+	s.sendChunk(openaifmt.BuildChatStreamChunk(
+		s.completionID,
+		s.created,
+		s.model,
+		[]map[string]any{openaifmt.BuildChatStreamDeltaChoice(0, map[string]any{"role": "assistant"})},
+		nil,
+	))
 }
 
 func (s *chatStreamRuntime) sendDelta(delta map[string]any) {
@@ -323,6 +354,9 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 			if rawTrimmed != "" {
 				s.rawThinking.WriteString(rawTrimmed)
 				contentSeen = true
+				if !s.exposeReasoning {
+					s.sendHiddenThinkingHeartbeat()
+				}
 			}
 			if s.thinkingEnabled {
 				cleanedText := cleanVisibleOutput(rawTrimmed, s.stripReferenceMarkers)

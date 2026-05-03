@@ -85,6 +85,59 @@ func streamFinishReason(frames []map[string]any) string {
 	return ""
 }
 
+func TestHandleStreamSendsRoleStartAndHiddenThinkingHeartbeat(t *testing.T) {
+	h := &Handler{}
+	resp := makeSSEHTTPResponse(
+		`data: {"p":"response/thinking_content","v":"plan"}`,
+		`data: {"p":"response/content","v":"visible"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	h.handleStream(rec, req, resp, "cid-role-start", "deepseek-v4-pro", "prompt", 0, true, false, false, nil, nil, nil)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, ": thinking\n\n") {
+		t.Fatalf("expected hidden thinking heartbeat comment, body=%s", body)
+	}
+	frames, done := parseSSEDataFrames(t, body)
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", body)
+	}
+	if len(frames) < 3 {
+		t.Fatalf("expected role, content, and finish frames, got %#v body=%s", frames, body)
+	}
+	choices, _ := frames[0]["choices"].([]any)
+	if len(choices) != 1 {
+		t.Fatalf("expected one choice in role start frame, got %#v", frames[0])
+	}
+	choice, _ := choices[0].(map[string]any)
+	delta, _ := choice["delta"].(map[string]any)
+	if asString(delta["role"]) != "assistant" {
+		t.Fatalf("expected first frame role=assistant, got %#v body=%s", delta, body)
+	}
+	if asString(delta["content"]) != "" || asString(delta["reasoning_content"]) != "" {
+		t.Fatalf("expected first frame to be role-only, got %#v body=%s", delta, body)
+	}
+
+	var visible strings.Builder
+	for _, frame := range frames {
+		choices, _ := frame["choices"].([]any)
+		for _, item := range choices {
+			choice, _ := item.(map[string]any)
+			delta, _ := choice["delta"].(map[string]any)
+			visible.WriteString(asString(delta["content"]))
+			if asString(delta["reasoning_content"]) != "" {
+				t.Fatalf("did not expect hidden reasoning_content delta, body=%s", body)
+			}
+		}
+	}
+	if visible.String() != "visible" {
+		t.Fatalf("expected visible content delta, got %q body=%s", visible.String(), body)
+	}
+}
+
 // Backward-compatible alias for historical test name used in CI logs.
 func TestHandleNonStreamReturns429WhenUpstreamOutputEmpty(t *testing.T) {
 	h := &Handler{}
