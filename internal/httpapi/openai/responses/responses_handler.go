@@ -132,14 +132,13 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID, err := h.DS.CreateSession(r.Context(), a, 3)
-	if err != nil {
-		handleCreateSessionError(w, historySession, a, err)
+	sessionID, pow, sessionErr, powErr := shared.PrepareSessionAndPow(r.Context(), h.DS, a, 3)
+	if sessionErr != nil {
+		handleCreateSessionError(w, historySession, a, sessionErr)
 		return
 	}
-	pow, err := h.DS.GetPow(r.Context(), a, 3)
-	if err != nil {
-		handlePowError(w, historySession, a, err)
+	if powErr != nil {
+		handlePowError(w, historySession, a, powErr)
 		return
 	}
 	payload := stdReq.CompletionPayload(sessionID)

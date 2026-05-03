@@ -108,11 +108,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		historySession.updateHistoryText(stdReq.HistoryText)
 	}
 
-	sessionID, err = h.DS.CreateSession(r.Context(), a, 3)
-	if err != nil {
-		sessionDetail := shared.SessionErrorDetail(err)
+	sessionID, pow, sessionErr, powErr := shared.PrepareSessionAndPow(r.Context(), h.DS, a, 3)
+	if sessionErr != nil {
+		sessionDetail := shared.SessionErrorDetail(sessionErr)
 		if sessionDetail.Stopped || sessionDetail.Status == http.StatusGatewayTimeout {
-			writeSessionCallError(w, historySession, err)
+			writeSessionCallError(w, historySession, sessionErr)
 			return
 		}
 		if a.UseConfigToken {
@@ -129,11 +129,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	pow, err := h.DS.GetPow(r.Context(), a, 3)
-	if err != nil {
-		powDetail := shared.PowErrorDetail(err)
+	if powErr != nil {
+		powDetail := shared.PowErrorDetail(powErr)
 		if powDetail.Stopped || powDetail.Status == http.StatusGatewayTimeout {
-			writePowCallError(w, historySession, err)
+			writePowCallError(w, historySession, powErr)
 			return
 		}
 		if !a.UseConfigToken {

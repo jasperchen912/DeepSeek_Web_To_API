@@ -74,11 +74,11 @@ func (h *Handler) handleDirectClaudeIfAvailable(w http.ResponseWriter, r *http.R
 	if historySession == nil {
 		historySession = historycapture.Start(h.ChatHistory, r, a, norm.Standard)
 	}
-	sessionID, err := h.DS.CreateSession(r.Context(), a, 3)
-	if err != nil {
-		sessionDetail := openaishared.SessionErrorDetail(err)
+	sessionID, pow, sessionErr, powErr := openaishared.PrepareSessionAndPow(r.Context(), h.DS, a, 3)
+	if sessionErr != nil {
+		sessionDetail := openaishared.SessionErrorDetail(sessionErr)
 		if sessionDetail.Stopped || sessionDetail.Status == http.StatusGatewayTimeout {
-			writeClaudeSessionCallError(w, historySession, err)
+			writeClaudeSessionCallError(w, historySession, sessionErr)
 			return true
 		}
 		if a.UseConfigToken {
@@ -95,11 +95,10 @@ func (h *Handler) handleDirectClaudeIfAvailable(w http.ResponseWriter, r *http.R
 		writeClaudeError(w, http.StatusUnauthorized, "Invalid token. If this should be a DeepSeek_Web_To_API key, add it to config.keys first.")
 		return true
 	}
-	pow, err := h.DS.GetPow(r.Context(), a, 3)
-	if err != nil {
-		powDetail := openaishared.PowErrorDetail(err)
+	if powErr != nil {
+		powDetail := openaishared.PowErrorDetail(powErr)
 		if powDetail.Stopped || powDetail.Status == http.StatusGatewayTimeout {
-			writeClaudePowCallError(w, historySession, err)
+			writeClaudePowCallError(w, historySession, powErr)
 			return true
 		}
 		if historySession != nil {

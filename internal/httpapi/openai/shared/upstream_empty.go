@@ -52,7 +52,7 @@ func PrepareEmptyOutputRetry(ctx context.Context, resolver any, ds DeepSeekCalle
 			if bindAuth != nil {
 				bindAuth(a)
 			}
-			sessionID, sessionErr := ds.CreateSession(ctx, a, 3)
+			sessionID, retryPow, sessionErr, powErr := PrepareSessionAndPow(ctx, ds, a, 3)
 			if sessionErr != nil {
 				config.Logger.Warn("[openai_empty_retry] retry account session creation failed", "surface", surface, "stream", stream, "retry_attempt", retryAttempt, "switch_attempt", switchAttempt, "error", sessionErr)
 				continue
@@ -62,7 +62,6 @@ func PrepareEmptyOutputRetry(ctx context.Context, resolver any, ds DeepSeekCalle
 				config.Logger.Warn("[openai_empty_retry] retry account returned empty session", "surface", surface, "stream", stream, "retry_attempt", retryAttempt, "switch_attempt", switchAttempt)
 				continue
 			}
-			retryPow, powErr := ds.GetPow(ctx, a, 3)
 			if powErr != nil {
 				config.Logger.Warn("[openai_empty_retry] retry account PoW fetch failed", "surface", surface, "stream", stream, "retry_attempt", retryAttempt, "switch_attempt", switchAttempt, "error", powErr)
 				continue
