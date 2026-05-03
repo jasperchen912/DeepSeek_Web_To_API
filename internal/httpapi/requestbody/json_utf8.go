@@ -2,6 +2,7 @@ package requestbody
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"mime"
@@ -12,10 +13,12 @@ import (
 
 var (
 	ErrInvalidUTF8Body     = errors.New("invalid utf-8 request body")
-	errRequestBodyTooLarge = errors.New("request body too large")
+	ErrRequestBodyTooLarge = errors.New("request body too large")
 )
 
 const maxJSONUTF8ValidationSize = 100 << 20
+
+type rawBodyContextKey struct{}
 
 // ValidateJSONUTF8 validates complete JSON request bodies before downstream
 // decoders can silently replace malformed UTF-8 or stop before trailing bytes.
@@ -25,10 +28,56 @@ func ValidateJSONUTF8(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if shouldValidateJSONBody(r) {
-			r.Body = validateAndReplayBody(r.Body)
+			body, raw, ok := validateAndReplayBody(r.Body)
+			r.Body = body
+			if ok {
+				r = r.WithContext(WithRawBody(r.Context(), raw))
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// WithRawBody stores a validated JSON body for downstream middleware and
+// handlers that need the exact original bytes.
+func WithRawBody(ctx context.Context, raw []byte) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, rawBodyContextKey{}, raw)
+}
+
+// RawBodyFromContext returns the original JSON body captured during request
+// validation.
+func RawBodyFromContext(ctx context.Context) ([]byte, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	raw, ok := ctx.Value(rawBodyContextKey{}).([]byte)
+	return raw, ok
+}
+
+// ReadAll returns the request body, preferring the validated copy captured by
+// ValidateJSONUTF8 when it is present.
+func ReadAll(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, error) {
+	if r == nil {
+		return nil, errors.New("request is nil")
+	}
+	if raw, ok := RawBodyFromContext(r.Context()); ok {
+		if maxBytes > 0 && int64(len(raw)) > maxBytes {
+			return nil, ErrRequestBodyTooLarge
+		}
+		return raw, nil
+	}
+	if r.Body == nil {
+		return nil, nil
+	}
+	body := r.Body
+	if maxBytes > 0 {
+		body = http.MaxBytesReader(w, r.Body, maxBytes)
+		r.Body = body
+	}
+	return io.ReadAll(body)
 }
 
 func shouldValidateJSONBody(r *http.Request) bool {
@@ -85,21 +134,21 @@ func isKnownJSONRequestPath(method, path string) bool {
 	}
 }
 
-func validateAndReplayBody(body io.ReadCloser) io.ReadCloser {
+func validateAndReplayBody(body io.ReadCloser) (io.ReadCloser, []byte, bool) {
 	if body == nil {
-		return body
+		return body, nil, false
 	}
 	raw, err := io.ReadAll(io.LimitReader(body, maxJSONUTF8ValidationSize+1))
 	if err != nil {
-		return &errorReadCloser{err: err, closer: body}
+		return &errorReadCloser{err: err, closer: body}, nil, false
 	}
 	if len(raw) > maxJSONUTF8ValidationSize {
-		return &errorReadCloser{err: errRequestBodyTooLarge, closer: body}
+		return &errorReadCloser{err: ErrRequestBodyTooLarge, closer: body}, nil, false
 	}
 	if !utf8.Valid(raw) {
-		return &errorReadCloser{err: ErrInvalidUTF8Body, closer: body}
+		return &errorReadCloser{err: ErrInvalidUTF8Body, closer: body}, nil, false
 	}
-	return &replayReadCloser{Reader: bytes.NewReader(raw), closer: body}
+	return &replayReadCloser{Reader: bytes.NewReader(raw), closer: body}, raw, true
 }
 
 type replayReadCloser struct {

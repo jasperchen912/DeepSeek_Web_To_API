@@ -35,12 +35,11 @@ func (h *Handler) handleGenerateContent(w http.ResponseWriter, r *http.Request, 
 var geminiProxyMaxBodyBytes int64 = openaishared.GeneralMaxSize
 
 func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, stream bool) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, geminiProxyMaxBodyBytes)
-	raw, err := io.ReadAll(r.Body)
+	raw, err := requestbody.ReadAll(w, r, geminiProxyMaxBodyBytes)
 	if err != nil {
 		if errors.Is(err, requestbody.ErrInvalidUTF8Body) {
 			writeGeminiError(w, http.StatusBadRequest, "invalid json")
-		} else if strings.Contains(strings.ToLower(err.Error()), "too large") {
+		} else if errors.Is(err, requestbody.ErrRequestBodyTooLarge) || strings.Contains(strings.ToLower(err.Error()), "too large") {
 			writeGeminiError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		} else {
 			writeGeminiError(w, http.StatusBadRequest, "invalid body")
@@ -65,7 +64,7 @@ func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, stream 
 	}
 	translatedReq = applyGeminiThinkingPolicyToOpenAIRequest(translatedReq, req)
 
-	proxyReq := r.Clone(openaishared.WithCurrentInputFileSkipped(r.Context()))
+	proxyReq := r.Clone(requestbody.WithRawBody(openaishared.WithCurrentInputFileSkipped(r.Context()), translatedReq))
 	proxyReq.URL.Path = "/v1/chat/completions"
 	proxyReq.Body = io.NopCloser(bytes.NewReader(translatedReq))
 	proxyReq.ContentLength = int64(len(translatedReq))

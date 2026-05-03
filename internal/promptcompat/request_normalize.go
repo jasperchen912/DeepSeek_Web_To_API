@@ -66,6 +66,37 @@ func NormalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 	}, nil
 }
 
+func NormalizeOpenAIChatHistoryRequest(store ConfigReader, req map[string]any) (StandardRequest, error) {
+	model, _ := req["model"].(string)
+	messagesRaw, _ := req["messages"].([]any)
+	if strings.TrimSpace(model) == "" || len(messagesRaw) == 0 {
+		return StandardRequest{}, fmt.Errorf("request must include 'model' and 'messages'")
+	}
+	messagesRaw = repairOpenAIToolMessages(messagesRaw)
+	resolvedModel, ok := config.ResolveModel(store, model)
+	if !ok {
+		return StandardRequest{}, fmt.Errorf("model %q is not available", model)
+	}
+	toolPolicy, err := parseToolChoicePolicy(req["tool_choice"], req["tools"])
+	if err != nil {
+		return StandardRequest{}, err
+	}
+	responseModel := strings.TrimSpace(model)
+	if responseModel == "" {
+		responseModel = resolvedModel
+	}
+	return StandardRequest{
+		Surface:        "openai_chat",
+		RequestedModel: strings.TrimSpace(model),
+		ResolvedModel:  resolvedModel,
+		ResponseModel:  responseModel,
+		Messages:       messagesRaw,
+		ToolsRaw:       req["tools"],
+		ToolChoice:     toolPolicy,
+		Stream:         util.ToBool(req["stream"]),
+	}, nil
+}
+
 func NormalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, traceID string) (StandardRequest, error) {
 	model, _ := req["model"].(string)
 	model = strings.TrimSpace(model)
@@ -127,6 +158,46 @@ func NormalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 		Search:          searchEnabled,
 		RefFileIDs:      refFileIDs,
 		PassThrough:     passThrough,
+	}, nil
+}
+
+func NormalizeOpenAIResponsesHistoryRequest(store ConfigReader, req map[string]any) (StandardRequest, error) {
+	model, _ := req["model"].(string)
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return StandardRequest{}, fmt.Errorf("request must include 'model'")
+	}
+	resolvedModel, ok := config.ResolveModel(store, model)
+	if !ok {
+		return StandardRequest{}, fmt.Errorf("model %q is not available", model)
+	}
+	allowWideInput := true
+	if store != nil {
+		allowWideInput = store.CompatWideInputStrictOutput()
+	}
+	var messagesRaw []any
+	if allowWideInput {
+		messagesRaw = ResponsesMessagesFromRequest(req)
+	} else if msgs, ok := req["messages"].([]any); ok && len(msgs) > 0 {
+		messagesRaw = msgs
+	}
+	if len(messagesRaw) == 0 {
+		return StandardRequest{}, fmt.Errorf("request must include 'input' or 'messages'")
+	}
+	messagesRaw = repairOpenAIToolMessages(messagesRaw)
+	toolPolicy, err := parseToolChoicePolicy(req["tool_choice"], req["tools"])
+	if err != nil {
+		return StandardRequest{}, err
+	}
+	return StandardRequest{
+		Surface:        "openai_responses",
+		RequestedModel: model,
+		ResolvedModel:  resolvedModel,
+		ResponseModel:  model,
+		Messages:       messagesRaw,
+		ToolsRaw:       req["tools"],
+		ToolChoice:     toolPolicy,
+		Stream:         util.ToBool(req["stream"]),
 	}, nil
 }
 

@@ -38,12 +38,11 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 var claudeProxyMaxBodyBytes int64 = openaishared.GeneralMaxSize
 
 func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store ConfigReader) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, claudeProxyMaxBodyBytes)
-	raw, err := io.ReadAll(r.Body)
+	raw, err := requestbody.ReadAll(w, r, claudeProxyMaxBodyBytes)
 	if err != nil {
 		if errors.Is(err, requestbody.ErrInvalidUTF8Body) {
 			writeClaudeError(w, http.StatusBadRequest, "invalid json")
-		} else if strings.Contains(strings.ToLower(err.Error()), "too large") {
+		} else if errors.Is(err, requestbody.ErrRequestBodyTooLarge) || strings.Contains(strings.ToLower(err.Error()), "too large") {
 			writeClaudeError(w, http.StatusRequestEntityTooLarge, "request body too large")
 		} else {
 			writeClaudeError(w, http.StatusBadRequest, "invalid body")
@@ -68,7 +67,7 @@ func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store C
 	translatedReq := translatorcliproxy.ToOpenAI(sdktranslator.FormatClaude, translateModel, raw, stream)
 	translatedReq, exposeThinking := applyClaudeThinkingPolicyToOpenAIRequest(translatedReq, req, stream)
 
-	proxyReq := r.Clone(openaishared.WithCurrentInputFileSkipped(r.Context()))
+	proxyReq := r.Clone(requestbody.WithRawBody(openaishared.WithCurrentInputFileSkipped(r.Context()), translatedReq))
 	proxyReq.URL.Path = "/v1/chat/completions"
 	proxyReq.Body = io.NopCloser(bytes.NewReader(translatedReq))
 	proxyReq.ContentLength = int64(len(translatedReq))

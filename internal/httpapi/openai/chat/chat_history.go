@@ -107,16 +107,27 @@ func (s *chatHistorySession) bindAuth(a *auth.RequestAuth) {
 	})
 }
 
-func (s *chatHistorySession) updateHistoryText(historyText string) {
+func (s *chatHistorySession) updateRequestSnapshot(stdReq promptcompat.StandardRequest) {
 	if s == nil || s.store == nil || s.disabled {
 		return
 	}
-	if strings.TrimSpace(historyText) == "" {
+	historyText := stdReq.HistoryText
+	finalPrompt := stdReq.FinalPrompt
+	if strings.TrimSpace(historyText) == "" && strings.TrimSpace(finalPrompt) == "" {
 		return
 	}
-	s.startParams.HistoryText = historyText
+	if strings.TrimSpace(finalPrompt) != "" {
+		s.finalPrompt = finalPrompt
+	}
+	if strings.TrimSpace(historyText) != "" {
+		s.startParams.HistoryText = historyText
+	}
+	if strings.TrimSpace(finalPrompt) != "" {
+		s.startParams.FinalPrompt = finalPrompt
+	}
 	s.persistUpdate(chathistory.UpdateParams{
 		HistoryText: historyText,
+		FinalPrompt: finalPrompt,
 		ElapsedMs:   time.Since(s.startedAt).Milliseconds(),
 	})
 }

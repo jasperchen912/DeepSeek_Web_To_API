@@ -748,6 +748,115 @@ func TestParseToolCallsToleratesDSMLSpaceSeparatorTypo(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsToleratesUserReportedDSMLVariants(t *testing.T) {
+	zeroWidthSeparator := "\u200d\u2581"
+	longCommand := `ssh -o ConnectTimeout=10 root@192.168.5.20 "systemctl is-active nanobot-gateway.service && echo '---' && systemctl status nanobot-gateway.service --no-pager -l | head -15 && echo '---' && curl -s -o /dev/null -w 'health:%{http_code}' http://127.0.0.1:18790/health && echo '' && journalctl -u nanobot-gateway.service --no-pager --since '5 min ago' | tail -20"`
+
+	tests := []struct {
+		name  string
+		text  string
+		want  int
+		check func(t *testing.T, calls []ParsedToolCall)
+	}{
+		{
+			name: "trailing pipe wrapper with multiple web_search invokes",
+			text: strings.Join([]string{
+				"<|DSML|tool_calls|>",
+				"<|DSML|invoke name=\"web_search\">",
+				"<|DSML|parameter name=\"query\"><![CDATA[Cisco CSCO stock price rally reasons May 2026]]></|DSML|parameter>",
+				"<|DSML|parameter name=\"count\">8</|DSML|parameter>",
+				"</|DSML|invoke>",
+				"<|DSML|invoke name=\"web_search\">",
+				"<|DSML|parameter name=\"query\"><![CDATA[思科 CSCO 股价 上涨 原因 2026年]]></|DSML|parameter>",
+				"<|DSML|parameter name=\"count\">5</|DSML|parameter>",
+				"</|DSML|invoke>",
+				"</|DSML|tool_calls|>",
+			}, "\n"),
+			want: 2,
+			check: func(t *testing.T, calls []ParsedToolCall) {
+				t.Helper()
+				if calls[0].Name != "web_search" || calls[1].Name != "web_search" {
+					t.Fatalf("expected web_search calls, got %#v", calls)
+				}
+				if got, _ := calls[0].Input["query"].(string); got != "Cisco CSCO stock price rally reasons May 2026" {
+					t.Fatalf("unexpected first query: %q", got)
+				}
+				if got, _ := calls[0].Input["count"].(float64); got != 8 {
+					t.Fatalf("unexpected first count: %#v", calls[0].Input["count"])
+				}
+			},
+		},
+		{
+			name: "bare DSML prefix with long exec command",
+			text: strings.Join([]string{
+				"<DSML|tool_calls>",
+				"<DSML|invoke name=\"exec\">",
+				"<DSML|parameter name=\"command\"><![CDATA[" + longCommand + "]]></DSML|parameter>",
+				"<DSML|parameter name=\"timeout\"><![CDATA[10]]></DSML|parameter>",
+				"</DSML|invoke>",
+				"</DSML|tool_calls>",
+			}, "\n"),
+			want: 1,
+			check: func(t *testing.T, calls []ParsedToolCall) {
+				t.Helper()
+				if calls[0].Name != "exec" {
+					t.Fatalf("expected exec call, got %#v", calls[0])
+				}
+				if got, _ := calls[0].Input["command"].(string); got != longCommand {
+					t.Fatalf("unexpected command: %q", got)
+				}
+				if got, _ := calls[0].Input["timeout"].(float64); got != 10 {
+					t.Fatalf("unexpected timeout: %#v", calls[0].Input["timeout"])
+				}
+			},
+		},
+		{
+			name: "fullwidth pipe with zero-width sentencepiece separator",
+			text: strings.Join([]string{
+				"<\uff5cDSML" + zeroWidthSeparator + "tool_calls>",
+				"<\uff5cDSML" + zeroWidthSeparator + "invoke name=\"web_search\">",
+				"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"count\"><![CDATA[8]]></\uff5cDSML" + zeroWidthSeparator + "parameter>",
+				"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"query\"><![CDATA[Chiang Mai cheapest international schools under 5000 USD 2025 2026 Panyaden Lanna ABS Ambassadorial bilingual quality]]></\uff5cDSML" + zeroWidthSeparator + "parameter>",
+				"</\uff5cDSML" + zeroWidthSeparator + "invoke>",
+				"<\uff5cDSML" + zeroWidthSeparator + "invoke name=\"web_search\">",
+				"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"count\"><![CDATA[8]]></\uff5cDSML" + zeroWidthSeparator + "parameter>",
+				"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"query\"><![CDATA[Spain public school quality ranking PISA 2025 foreign students integration English support]]></\uff5cDSML" + zeroWidthSeparator + "parameter>",
+				"</\uff5cDSML" + zeroWidthSeparator + "invoke>",
+				"<\uff5cDSML" + zeroWidthSeparator + "invoke name=\"web_search\">",
+				"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"count\"><![CDATA[8]]></\uff5cDSML" + zeroWidthSeparator + "parameter>",
+				"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"query\"><![CDATA[Portugal public school digital nomad children enrollment quality free education expat 2025 2026]]></\uff5cDSML" + zeroWidthSeparator + "parameter>",
+				"</\uff5cDSML" + zeroWidthSeparator + "invoke>",
+				"</\uff5cDSML" + zeroWidthSeparator + "tool_calls>",
+			}, "\n"),
+			want: 3,
+			check: func(t *testing.T, calls []ParsedToolCall) {
+				t.Helper()
+				for i, call := range calls {
+					if call.Name != "web_search" {
+						t.Fatalf("call %d expected web_search, got %#v", i, call)
+					}
+					if got, _ := call.Input["count"].(float64); got != 8 {
+						t.Fatalf("call %d unexpected count: %#v", i, call.Input["count"])
+					}
+					if got, _ := call.Input["query"].(string); strings.TrimSpace(got) == "" {
+						t.Fatalf("call %d expected query, got %#v", i, call.Input["query"])
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := ParseToolCalls(tt.text, []string{"web_search", "exec"})
+			if len(calls) != tt.want {
+				t.Fatalf("expected %d calls, got %#v", tt.want, calls)
+			}
+			tt.check(t, calls)
+		})
+	}
+}
+
 func TestParseToolCallsDoesNotAcceptDSMLSpaceLookalikeTagName(t *testing.T) {
 	text := strings.Join([]string{
 		"<|DSML tool_calls_extra>",

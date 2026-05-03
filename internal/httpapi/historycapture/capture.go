@@ -105,6 +105,31 @@ func (s *Session) BindAuth(a *auth.RequestAuth) {
 	})
 }
 
+func (s *Session) UpdateRequestSnapshot(stdReq promptcompat.StandardRequest) {
+	if s == nil || s.store == nil || s.disabled {
+		return
+	}
+	historyText := stdReq.HistoryText
+	finalPrompt := stdReq.FinalPrompt
+	if strings.TrimSpace(historyText) == "" && strings.TrimSpace(finalPrompt) == "" {
+		return
+	}
+	if strings.TrimSpace(finalPrompt) != "" {
+		s.finalPrompt = finalPrompt
+	}
+	if strings.TrimSpace(historyText) != "" {
+		s.startParams.HistoryText = historyText
+	}
+	if strings.TrimSpace(finalPrompt) != "" {
+		s.startParams.FinalPrompt = finalPrompt
+	}
+	s.persistUpdate(chathistory.UpdateParams{
+		HistoryText: historyText,
+		FinalPrompt: finalPrompt,
+		ElapsedMs:   time.Since(s.startedAt).Milliseconds(),
+	})
+}
+
 func (s *Session) Progress(thinking, content string) {
 	if s == nil || s.store == nil || s.disabled {
 		return

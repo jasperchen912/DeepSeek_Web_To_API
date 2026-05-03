@@ -14,6 +14,7 @@ import (
 	claudefmt "DeepSeek_Web_To_API/internal/format/claude"
 	"DeepSeek_Web_To_API/internal/httpapi/historycapture"
 	openaishared "DeepSeek_Web_To_API/internal/httpapi/openai/shared"
+	"DeepSeek_Web_To_API/internal/httpapi/requestbody"
 	"DeepSeek_Web_To_API/internal/prompt"
 	"DeepSeek_Web_To_API/internal/promptcompat"
 	"DeepSeek_Web_To_API/internal/sse"
@@ -34,11 +35,14 @@ func (h *Handler) handleDirectClaudeIfAvailable(w http.ResponseWriter, r *http.R
 		return false
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, openaishared.GeneralMaxSize)
-	raw, err := io.ReadAll(r.Body)
+	raw, err := requestbody.ReadAll(w, r, openaishared.GeneralMaxSize)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "too large") {
+		if errors.Is(err, requestbody.ErrRequestBodyTooLarge) || strings.Contains(strings.ToLower(err.Error()), "too large") {
 			writeClaudeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return true
+		}
+		if errors.Is(err, requestbody.ErrInvalidUTF8Body) {
+			writeClaudeError(w, http.StatusBadRequest, "invalid json")
 			return true
 		}
 		writeClaudeError(w, http.StatusBadRequest, "invalid body")

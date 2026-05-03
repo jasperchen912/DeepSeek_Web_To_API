@@ -49,6 +49,41 @@ func TestValidateJSONUTF8AllowsSplitMultibyteRunes(t *testing.T) {
 	}
 }
 
+func TestValidateJSONUTF8StoresRawBodyForReadAll(t *testing.T) {
+	body := []byte(`{"text":"hello"}`)
+	handler := ValidateJSONUTF8(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, ok := RawBodyFromContext(r.Context())
+		if !ok {
+			t.Fatal("expected raw body in context")
+		}
+		if string(raw) != string(body) {
+			t.Fatalf("unexpected raw body: %q", raw)
+		}
+		got, err := ReadAll(w, r, 1024)
+		if err != nil {
+			t.Fatalf("ReadAll failed: %v", err)
+		}
+		if string(got) != string(body) {
+			t.Fatalf("ReadAll body mismatch: %q", got)
+		}
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("body should remain replayable after context ReadAll: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for valid utf-8 json, got %d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestValidateJSONUTF8RejectsInvalidBytesBeforeJSONDecode(t *testing.T) {
 	body := append([]byte(`{"text":"`), 0xff)
 	body = append(body, []byte(`"}`)...)

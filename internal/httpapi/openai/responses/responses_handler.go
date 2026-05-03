@@ -1,8 +1,8 @@
 package responses
 
 import (
-	"DeepSeek_Web_To_API/internal/toolcall"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -17,9 +17,11 @@ import (
 	openaifmt "DeepSeek_Web_To_API/internal/format/openai"
 	"DeepSeek_Web_To_API/internal/httpapi/historycapture"
 	"DeepSeek_Web_To_API/internal/httpapi/openai/shared"
+	"DeepSeek_Web_To_API/internal/httpapi/requestbody"
 	"DeepSeek_Web_To_API/internal/promptcompat"
 	"DeepSeek_Web_To_API/internal/sse"
 	streamengine "DeepSeek_Web_To_API/internal/stream"
+	"DeepSeek_Web_To_API/internal/toolcall"
 )
 
 func (h *Handler) GetResponseByID(w http.ResponseWriter, r *http.Request) {
@@ -49,11 +51,14 @@ func (h *Handler) GetResponseByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, openAIGeneralMaxSize)
-	rawBody, err := io.ReadAll(r.Body)
+	rawBody, err := requestbody.ReadAll(w, r, openAIGeneralMaxSize)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "too large") {
+		if errors.Is(err, requestbody.ErrRequestBodyTooLarge) || strings.Contains(strings.ToLower(err.Error()), "too large") {
 			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		if errors.Is(err, requestbody.ErrInvalidUTF8Body) {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid json: invalid utf-8 request body")
 			return
 		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid body")
@@ -71,12 +76,11 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	traceID := requestTraceID(r)
-	historyStdReq, err := promptcompat.NormalizeOpenAIResponsesRequest(h.Store, req, traceID)
+	historyStdReq, err := promptcompat.NormalizeOpenAIResponsesHistoryRequest(h.Store, req)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	historyStdReq = shared.ApplyThinkingInjection(h.Store, historyStdReq)
 	historySession := historycapture.StartWithStatus(h.ChatHistory, r, callerAuth, historyStdReq, "queued")
 
 	a, err := h.Auth.DetermineWithSession(r, rawBody)
@@ -130,6 +134,9 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		}
 		writeOpenAIError(w, status, message)
 		return
+	}
+	if historySession != nil {
+		historySession.UpdateRequestSnapshot(stdReq)
 	}
 
 	sessionID, pow, sessionErr, powErr := shared.PrepareSessionAndPow(r.Context(), h.DS, a, 3)

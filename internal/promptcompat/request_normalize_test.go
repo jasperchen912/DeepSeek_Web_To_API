@@ -85,6 +85,40 @@ func TestNormalizeOpenAIChatRequestRequiredToolChoiceRequiresTools(t *testing.T)
 	}
 }
 
+func TestNormalizeOpenAIHistoryRequestsSkipPromptBuild(t *testing.T) {
+	t.Parallel()
+
+	chatOut, err := NormalizeOpenAIChatHistoryRequest(normalizeRequestTestConfig{}, map[string]any{
+		"model":    "deepseek-v4-flash",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		"tools":    requestNormalizeTools(),
+	})
+	if err != nil {
+		t.Fatalf("NormalizeOpenAIChatHistoryRequest error: %v", err)
+	}
+	if chatOut.FinalPrompt != "" || len(chatOut.ToolNames) != 0 {
+		t.Fatalf("history request should not build prompt/tool names, got prompt=%q tools=%#v", chatOut.FinalPrompt, chatOut.ToolNames)
+	}
+	if len(chatOut.Messages) != 1 || chatOut.ResponseModel != "deepseek-v4-flash" {
+		t.Fatalf("unexpected chat history request: %#v", chatOut)
+	}
+
+	responsesOut, err := NormalizeOpenAIResponsesHistoryRequest(normalizeRequestTestConfig{}, map[string]any{
+		"model": "deepseek-v4-flash",
+		"input": "hello",
+		"tools": requestNormalizeTools(),
+	})
+	if err != nil {
+		t.Fatalf("NormalizeOpenAIResponsesHistoryRequest error: %v", err)
+	}
+	if responsesOut.FinalPrompt != "" || len(responsesOut.ToolNames) != 0 {
+		t.Fatalf("history request should not build prompt/tool names, got prompt=%q tools=%#v", responsesOut.FinalPrompt, responsesOut.ToolNames)
+	}
+	if len(responsesOut.Messages) != 1 || responsesOut.ResponseModel != "deepseek-v4-flash" {
+		t.Fatalf("unexpected responses history request: %#v", responsesOut)
+	}
+}
+
 func TestNormalizeOpenAIChatRequestKeepsReasoningHiddenByDefault(t *testing.T) {
 	t.Parallel()
 

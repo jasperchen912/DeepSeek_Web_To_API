@@ -167,11 +167,19 @@ func scanToolMarkupTagAt(text string, start int) (ToolMarkupTag, bool) {
 		return ToolMarkupTag{}, false
 	}
 	nameEnd := i + nameLen
-	nameEndBeforePipes := nameEnd
-	for next, ok := consumeToolMarkupPipe(text, nameEnd); ok; next, ok = consumeToolMarkupPipe(text, nameEnd) {
-		nameEnd = next
+	hasTrailingPipe := false
+	for {
+		if next, ok := consumeToolMarkupPipe(text, nameEnd); ok {
+			nameEnd = next
+			hasTrailingPipe = true
+			continue
+		}
+		if next, ok := consumeToolMarkupSeparatorNoise(text, nameEnd); ok {
+			nameEnd = next
+			continue
+		}
+		break
 	}
-	hasTrailingPipe := nameEnd > nameEndBeforePipes
 	if !hasToolMarkupBoundary(text, nameEnd) {
 		return ToolMarkupTag{}, false
 	}
@@ -251,6 +259,9 @@ func consumeToolMarkupNamePrefixOnce(lower, text string, idx int) (int, bool) {
 	if next, ok := consumeToolMarkupPipe(text, idx); ok {
 		return next, true
 	}
+	if next, ok := consumeToolMarkupSeparatorNoise(text, idx); ok {
+		return next, true
+	}
 	if idx < len(text) && (text[idx] == ' ' || text[idx] == '\t' || text[idx] == '\r' || text[idx] == '\n') {
 		return idx + 1, true
 	}
@@ -287,6 +298,25 @@ func consumeToolMarkupPipe(text string, idx int) (int, bool) {
 	}
 	if strings.HasPrefix(text[idx:], "｜") {
 		return idx + len("｜"), true
+	}
+	return idx, false
+}
+
+func consumeToolMarkupSeparatorNoise(text string, idx int) (int, bool) {
+	if idx >= len(text) {
+		return idx, false
+	}
+	for _, token := range []string{
+		"\u200b", // zero-width space
+		"\u200c", // zero-width non-joiner
+		"\u200d", // zero-width joiner
+		"\u2060", // word joiner
+		"\ufeff", // zero-width no-break space / BOM
+		"\u2581", // SentencePiece whitespace marker
+	} {
+		if strings.HasPrefix(text[idx:], token) {
+			return idx + len(token), true
+		}
 	}
 	return idx, false
 }

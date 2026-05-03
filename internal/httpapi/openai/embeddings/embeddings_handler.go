@@ -1,9 +1,11 @@
 package embeddings
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"DeepSeek_Web_To_API/internal/chathistory"
 	"DeepSeek_Web_To_API/internal/config"
 	"DeepSeek_Web_To_API/internal/httpapi/openai/shared"
+	"DeepSeek_Web_To_API/internal/httpapi/requestbody"
 	"DeepSeek_Web_To_API/internal/util"
 )
 
@@ -35,13 +38,21 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	defer h.Auth.Release(a)
 
-	r.Body = http.MaxBytesReader(w, r.Body, shared.GeneralMaxSize)
-	var req map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "too large") {
+	raw, err := requestbody.ReadAll(w, r, shared.GeneralMaxSize)
+	if err != nil {
+		if errors.Is(err, requestbody.ErrRequestBodyTooLarge) || strings.Contains(strings.ToLower(err.Error()), "too large") {
 			shared.WriteOpenAIError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
+		if errors.Is(err, requestbody.ErrInvalidUTF8Body) {
+			shared.WriteOpenAIError(w, http.StatusBadRequest, "invalid json: invalid utf-8 request body")
+			return
+		}
+		shared.WriteOpenAIError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	var req map[string]any
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&req); err != nil {
 		shared.WriteOpenAIError(w, http.StatusBadRequest, "invalid json")
 		return
 	}

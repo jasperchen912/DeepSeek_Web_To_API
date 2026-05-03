@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"DeepSeek_Web_To_API/internal/auth"
+	"DeepSeek_Web_To_API/internal/httpapi/requestbody"
 )
 
 type stubResolver struct {
@@ -20,11 +21,50 @@ type stubResolver struct {
 	err    error
 }
 
+type failingReadCloser struct{}
+
+func (failingReadCloser) Read([]byte) (int, error) {
+	return 0, errors.New("body should not be read")
+}
+
+func (failingReadCloser) Close() error {
+	return nil
+}
+
 func (s stubResolver) DetermineCaller(_ *http.Request) (*auth.RequestAuth, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
 	return &auth.RequestAuth{CallerID: s.caller}, nil
+}
+
+func TestMiddlewareUsesValidatedRawBodyContext(t *testing.T) {
+	t.Parallel()
+
+	cache := New(Options{Dir: t.TempDir(), MemoryTTL: time.Minute, DiskTTL: time.Hour})
+	handler := cache.Wrap(stubResolver{caller: "caller-a"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		_, _ = fmt.Fprintf(w, `{"body":%q}`, string(body))
+	}))
+
+	raw := []byte(`{"model":"m","messages":[]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req = req.WithContext(requestbody.WithRawBody(req.Context(), raw))
+	req.Body = failingReadCloser{}
+	req.Header.Set("Authorization", "Bearer key-a")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"body":"{\"model\":\"m\",\"messages\":[]}"`) {
+		t.Fatalf("handler did not receive raw context body: %s", rec.Body.String())
+	}
 }
 
 func TestMiddlewareCachesProtocolResponseInMemory(t *testing.T) {

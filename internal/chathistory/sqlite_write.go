@@ -104,6 +104,9 @@ func (s *sqliteStore) Update(id string, params UpdateParams) (Entry, error) {
 	if params.HistoryText != "" {
 		item.HistoryText = params.HistoryText
 	}
+	if params.FinalPrompt != "" {
+		item.FinalPrompt = strings.TrimSpace(params.FinalPrompt)
+	}
 	item.ReasoningContent = params.ReasoningContent
 	item.Content = params.Content
 	item.Error = strings.TrimSpace(params.Error)

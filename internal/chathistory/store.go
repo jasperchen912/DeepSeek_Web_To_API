@@ -108,6 +108,7 @@ type UpdateParams struct {
 	AccountID        string
 	Status           string
 	HistoryText      string
+	FinalPrompt      string
 	ReasoningContent string
 	Content          string
 	Error            string
@@ -426,6 +427,9 @@ func (s *Store) Update(id string, params UpdateParams) (Entry, error) {
 	}
 	if params.HistoryText != "" {
 		item.HistoryText = params.HistoryText
+	}
+	if params.FinalPrompt != "" {
+		item.FinalPrompt = strings.TrimSpace(params.FinalPrompt)
 	}
 	if params.ReasoningContent != "" || item.ReasoningContent == "" {
 		item.ReasoningContent = params.ReasoningContent

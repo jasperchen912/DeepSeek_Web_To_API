@@ -23,10 +23,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Read body first so we can compute a session-affinity key before
 	// acquiring an account from the pool. Same Claude Code / Codex
 	// conversation → same account, preserving upstream session context.
-	r.Body = http.MaxBytesReader(w, r.Body, openAIGeneralMaxSize)
-	rawBody, err := io.ReadAll(r.Body)
+	rawBody, err := requestbody.ReadAll(w, r, openAIGeneralMaxSize)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "too large") {
+		if errors.Is(err, requestbody.ErrRequestBodyTooLarge) || strings.Contains(strings.ToLower(err.Error()), "too large") {
 			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return
 		}
@@ -48,12 +47,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	historyStdReq, err := promptcompat.NormalizeOpenAIChatRequest(h.Store, req, requestTraceID(r))
+	historyStdReq, err := promptcompat.NormalizeOpenAIChatHistoryRequest(h.Store, req)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	historyStdReq = shared.ApplyThinkingInjection(h.Store, historyStdReq)
 	historySession := startQueuedChatHistory(h.ChatHistory, r, callerAuth, historyStdReq)
 
 	a, err := h.Auth.DetermineWithSession(r, rawBody)
@@ -105,7 +103,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if historySession != nil {
-		historySession.updateHistoryText(stdReq.HistoryText)
+		historySession.updateRequestSnapshot(stdReq)
 	}
 
 	sessionID, pow, sessionErr, powErr := shared.PrepareSessionAndPow(r.Context(), h.DS, a, 3)

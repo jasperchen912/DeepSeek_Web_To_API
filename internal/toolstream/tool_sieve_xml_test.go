@@ -885,6 +885,49 @@ func TestProcessToolSieveFullwidthDSMLPrefixVariantDoesNotLeak(t *testing.T) {
 	}
 }
 
+func TestProcessToolSieveZeroWidthDSMLSeparatorVariantDoesNotLeak(t *testing.T) {
+	var state State
+	zeroWidthSeparator := "\u200d\u2581"
+	chunks := []string{
+		"<\uff5cDSML",
+		zeroWidthSeparator + "tool_calls>\n",
+		"<\uff5cDSML" + zeroWidthSeparator + "invoke name=\"web_search\">\n",
+		"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"count\"><![CDATA[8]]></\uff5cDSML" + zeroWidthSeparator + "parameter>\n",
+		"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"query\"><![CDATA[Chiang Mai cheapest international schools under 5000 USD 2025 2026 Panyaden Lanna ABS Ambassadorial bilingual quality]]></\uff5cDSML" + zeroWidthSeparator + "parameter>\n",
+		"</\uff5cDSML" + zeroWidthSeparator + "invoke>\n",
+		"<\uff5cDSML" + zeroWidthSeparator + "invoke name=\"web_search\">\n",
+		"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"count\"><![CDATA[8]]></\uff5cDSML" + zeroWidthSeparator + "parameter>\n",
+		"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"query\"><![CDATA[Spain public school quality ranking PISA 2025 foreign students integration English support]]></\uff5cDSML" + zeroWidthSeparator + "parameter>\n",
+		"</\uff5cDSML" + zeroWidthSeparator + "invoke>\n",
+		"<\uff5cDSML" + zeroWidthSeparator + "invoke name=\"web_search\">\n",
+		"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"count\"><![CDATA[8]]></\uff5cDSML" + zeroWidthSeparator + "parameter>\n",
+		"<\uff5cDSML" + zeroWidthSeparator + "parameter name=\"query\"><![CDATA[Portugal public school digital nomad children enrollment quality free education expat 2025 2026]]></\uff5cDSML" + zeroWidthSeparator + "parameter>\n",
+		"</\uff5cDSML" + zeroWidthSeparator + "invoke>\n",
+		"</\uff5cDSML" + zeroWidthSeparator + "tool_calls>",
+	}
+	var events []Event
+	for _, c := range chunks {
+		events = append(events, ProcessChunk(&state, c, []string{"web_search"})...)
+	}
+	events = append(events, Flush(&state, []string{"web_search"})...)
+
+	var textContent strings.Builder
+	var calls []any
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		for _, call := range evt.ToolCalls {
+			calls = append(calls, call)
+		}
+	}
+
+	if len(calls) != 3 {
+		t.Fatalf("expected three zero-width DSML tool calls, got %d events=%#v", len(calls), events)
+	}
+	if text := textContent.String(); strings.Contains(strings.ToLower(text), "dsml") || strings.Contains(text, "web_search") {
+		t.Fatalf("zero-width DSML variant leaked to text: %q events=%#v", text, events)
+	}
+}
+
 // Test <DSML|tool_calls> with <|DSML|invoke> (DSML prefix without leading pipe on wrapper).
 func TestProcessToolSieveDSMLPrefixVariantDoesNotLeak(t *testing.T) {
 	var state State

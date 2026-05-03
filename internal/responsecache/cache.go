@@ -21,6 +21,7 @@ import (
 
 	"DeepSeek_Web_To_API/internal/auth"
 	"DeepSeek_Web_To_API/internal/config"
+	"DeepSeek_Web_To_API/internal/httpapi/requestbody"
 )
 
 const (
@@ -148,14 +149,18 @@ func (c *Cache) Wrap(resolver CallerResolver, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		rawBody, tooLarge, err := c.readRequestBody(r)
+		rawBody, tooLarge, fromContext, err := c.readRequestBody(r)
 		if err != nil {
-			r.Body = replayBody(rawBody, r.Body)
+			if !fromContext {
+				r.Body = replayBody(rawBody, r.Body)
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
 		if tooLarge {
-			r.Body = replayBody(rawBody, r.Body)
+			if !fromContext {
+				r.Body = replayBody(rawBody, r.Body)
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -386,22 +391,28 @@ func (c *Cache) requestBodyTooLarge(r *http.Request) bool {
 	return r.ContentLength > c.maxBody
 }
 
-func (c *Cache) readRequestBody(r *http.Request) ([]byte, bool, error) {
+func (c *Cache) readRequestBody(r *http.Request) ([]byte, bool, bool, error) {
 	if r == nil || r.Body == nil {
-		return nil, false, nil
+		return nil, false, false, nil
+	}
+	if raw, ok := requestbody.RawBodyFromContext(r.Context()); ok {
+		if c.maxBody > 0 && int64(len(raw)) > c.maxBody {
+			return raw, true, true, nil
+		}
+		return raw, false, true, nil
 	}
 	if c.maxBody <= 0 {
 		raw, err := io.ReadAll(r.Body)
-		return raw, false, err
+		return raw, false, false, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, c.maxBody+1))
 	if err != nil {
-		return raw, false, err
+		return raw, false, false, err
 	}
 	if int64(len(raw)) > c.maxBody {
-		return raw, true, nil
+		return raw, true, false, nil
 	}
-	return raw, false, nil
+	return raw, false, false, nil
 }
 
 type replayReadCloser struct {
