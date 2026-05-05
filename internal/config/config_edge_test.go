@@ -753,6 +753,27 @@ func TestOpenAIModelsResponse(t *testing.T) {
 		if _, ok := expected[model.ID]; ok {
 			expected[model.ID] = true
 		}
+		if len(model.Input) == 0 {
+			t.Fatalf("expected model %s to include input capability metadata", model.ID)
+		}
+		if len(model.Output) == 0 {
+			t.Fatalf("expected model %s to include output capability metadata", model.ID)
+		}
+		if model.Cost == nil {
+			t.Fatalf("expected model %s to include zero cost compatibility metadata", model.ID)
+		}
+	}
+	encoded, err := json.Marshal(data[0])
+	if err != nil {
+		t.Fatalf("marshal model metadata failed: %v", err)
+	}
+	modelJSON := map[string]any{}
+	if err := json.Unmarshal(encoded, &modelJSON); err != nil {
+		t.Fatalf("decode model metadata failed: %v", err)
+	}
+	costJSON, _ := modelJSON["cost"].(map[string]any)
+	if modelJSON["input"] == nil || modelJSON["output"] == nil || costJSON["input"] == nil {
+		t.Fatalf("expected JSON model metadata to include input/output/cost.input, got %s", string(encoded))
 	}
 	for id, seen := range expected {
 		if !seen {

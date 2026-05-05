@@ -234,7 +234,7 @@ func (h *Handler) prepareChatStreamRuntime(w http.ResponseWriter, resp *http.Res
 		w, rc, canFlush, completionID, time.Now().Unix(), model, finalPrompt,
 		thinkingEnabled, exposeReasoning, searchEnabled, h.compatStripReferenceMarkers(), toolNames, toolsRaw,
 		requireToolCall,
-		len(toolNames) > 0, h.toolcallFeatureMatchEnabled() && h.toolcallEarlyEmitHighConfidence(),
+		shared.ShouldBufferStreamToolContent(finalPrompt, toolNames), h.toolcallFeatureMatchEnabled() && h.toolcallEarlyEmitHighConfidence(),
 	)
 	streamRuntime.refFileTokens = refFileTokens
 	return streamRuntime, initialType, true

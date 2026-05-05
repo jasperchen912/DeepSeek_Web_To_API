@@ -140,6 +140,28 @@ func TestBuildChatCompletionWithToolCallsCoercesSchemaDeclaredStringArguments(t 
 	}
 }
 
+func TestBuildChatUsageIncludesOpenClawAliasesAndDetails(t *testing.T) {
+	usage := BuildChatUsageForModel("deepseek-v4-pro", "prompt", "thinking", "answer", 0)
+	if _, ok := usage["prompt_tokens_details"].(map[string]any); !ok {
+		t.Fatalf("expected prompt_tokens_details object, got %#v", usage)
+	}
+	if _, ok := usage["completion_tokens_details"].(map[string]any); !ok {
+		t.Fatalf("expected completion_tokens_details object, got %#v", usage)
+	}
+	if usage["input"] == nil || usage["output"] == nil || usage["totalTokens"] == nil {
+		t.Fatalf("expected OpenClaw usage aliases, got %#v", usage)
+	}
+	cost, _ := usage["cost"].(map[string]any)
+	if cost == nil {
+		t.Fatalf("expected cost compatibility object, got %#v", usage)
+	}
+	for _, key := range []string{"input", "output", "cacheRead", "cacheWrite", "total"} {
+		if _, ok := cost[key]; !ok {
+			t.Fatalf("expected cost.%s compatibility field, got %#v", key, cost)
+		}
+	}
+}
+
 func TestBuildResponseObjectWithToolCallsCoercesSchemaDeclaredStringArguments(t *testing.T) {
 	toolsRaw := []any{
 		map[string]any{

@@ -344,6 +344,51 @@ func TestHandleResponsesStreamPromotesHiddenThinkingDSMLToolCallsOnFinalize(t *t
 	}
 }
 
+func TestHandleResponsesStreamBuffersPromptVisibleDSMLToolCallsWithoutDeclaredTools(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	rec := httptest.NewRecorder()
+
+	sseLine := func(value string) string {
+		b, _ := json.Marshal(map[string]any{
+			"p": "response/content",
+			"v": value,
+		})
+		return "data: " + string(b) + "\n"
+	}
+
+	streamBody := sseLine("<DSML|tool_calls>\n") +
+		sseLine("<DSML|invoke name=\"exec\">\n") +
+		sseLine("<DSML|parameter name=\"command\"><![CDATA[cp /Users/jiajunch/.openclaw/openclaw.json \"/Users/jiajunch/.openclaw/openclaw.json.backup-$(date +%Y%m%d-%H%M%S)\" && echo \"BACKUP_OK\"></DSML|parameter>\n") +
+		sseLine("<DSML|parameter name=\"timeout\"><10></DSML|parameter>\n</DSML|invoke>\n</DSML|tool_calls>") +
+		sseLine("\n\n<DSML|tool_calls>\n<DSML|invoke name=\"cron\">\n<DSML|parameter name=\"action\"><![CDATA[list]]></DSML|parameter>\n</DSML|invoke>\n</DSML|tool_calls>") +
+		"data: [DONE]\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(streamBody)),
+	}
+	finalPrompt := "System tool contract:\n<DSML|tool_calls><DSML|invoke name=\"exec\"></DSML|invoke></DSML|tool_calls>"
+
+	h.handleResponsesStream(rec, req, resp, "owner-a", "resp_prompt_dsml", "deepseek-v4-pro", finalPrompt, 0, false, false, nil, nil, promptcompat.DefaultToolChoicePolicy(), "")
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: response.function_call_arguments.done") {
+		t.Fatalf("expected function call event for prompt-visible DSML tools, body=%s", body)
+	}
+	if !strings.Contains(body, `"name":"exec"`) || !strings.Contains(body, `"name":"cron"`) {
+		t.Fatalf("expected both recovered function calls, body=%s", body)
+	}
+	for _, payload := range extractSSEEventPayloads(body, "response.output_text.delta") {
+		delta := asString(payload["delta"])
+		if strings.Contains(strings.ToLower(delta), "dsml") || strings.Contains(delta, "tool_calls") {
+			t.Fatalf("DSML markup leaked as response text delta %q, body=%s", delta, body)
+		}
+	}
+	if strings.Contains(body, "event: response.failed") {
+		t.Fatalf("did not expect response.failed, body=%s", body)
+	}
+}
+
 func TestHandleResponsesNonStreamRequiredToolChoiceViolation(t *testing.T) {
 	h := &Handler{}
 	rec := httptest.NewRecorder()

@@ -3,12 +3,24 @@ package config
 import "strings"
 
 type ModelInfo struct {
-	ID         string `json:"id"`
-	Object     string `json:"object"`
-	Created    int64  `json:"created"`
-	OwnedBy    string `json:"owned_by"`
-	Permission []any  `json:"permission,omitempty"`
+	ID         string     `json:"id"`
+	Object     string     `json:"object"`
+	Created    int64      `json:"created"`
+	OwnedBy    string     `json:"owned_by"`
+	Permission []any      `json:"permission,omitempty"`
+	Input      []string   `json:"input,omitempty"`
+	Output     []string   `json:"output,omitempty"`
+	Cost       *ModelCost `json:"cost,omitempty"`
 }
+
+type ModelCost struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cacheRead"`
+	CacheWrite float64 `json:"cacheWrite"`
+}
+
+var zeroModelCost = &ModelCost{}
 
 type ModelAliasReader interface {
 	ModelAliases() map[string]string
@@ -17,11 +29,11 @@ type ModelAliasReader interface {
 const noThinkingModelSuffix = "-nothinking"
 
 var deepSeekBaseModels = []ModelInfo{
-	{ID: "deepseek-v4-flash", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
-	{ID: "deepseek-v4-pro", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
-	{ID: "deepseek-v4-flash-search", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
-	{ID: "deepseek-v4-pro-search", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
-	{ID: "deepseek-v4-vision", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}},
+	{ID: "deepseek-v4-flash", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}, Input: []string{"text"}, Output: []string{"text"}, Cost: zeroModelCost},
+	{ID: "deepseek-v4-pro", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}, Input: []string{"text"}, Output: []string{"text"}, Cost: zeroModelCost},
+	{ID: "deepseek-v4-flash-search", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}, Input: []string{"text"}, Output: []string{"text"}, Cost: zeroModelCost},
+	{ID: "deepseek-v4-pro-search", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}, Input: []string{"text"}, Output: []string{"text"}, Cost: zeroModelCost},
+	{ID: "deepseek-v4-vision", Object: "model", Created: 1677610602, OwnedBy: "deepseek", Permission: []any{}, Input: []string{"text", "image"}, Output: []string{"text"}, Cost: zeroModelCost},
 }
 
 var DeepSeekModels = appendNoThinkingVariants(deepSeekBaseModels)

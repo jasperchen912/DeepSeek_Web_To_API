@@ -46,12 +46,10 @@ function parseToolCallsDetailed(text, toolNames) {
     return result;
   }
   // XML markup parsing only.
-  let parsed = parseMarkupToolCalls(normalized);
-  if (parsed.length === 0 && normalized.toLowerCase().includes('<![cdata[')) {
-    const recovered = sanitizeLooseCDATA(normalized);
-    if (recovered !== normalized) {
-      parsed = parseMarkupToolCalls(recovered);
-    }
+  const candidate = sanitizeLooseCDATA(normalized);
+  let parsed = parseMarkupToolCalls(candidate);
+  if (parsed.length === 0 && candidate !== normalized) {
+    parsed = parseMarkupToolCalls(normalized);
   }
   if (parsed.length === 0) {
     return result;
@@ -79,12 +77,10 @@ function parseStandaloneToolCallsDetailed(text, toolNames) {
     return result;
   }
   // XML markup parsing only.
-  let parsed = parseMarkupToolCalls(trimmed);
-  if (parsed.length === 0 && trimmed.toLowerCase().includes('<![cdata[')) {
-    const recovered = sanitizeLooseCDATA(trimmed);
-    if (recovered !== trimmed) {
-      parsed = parseMarkupToolCalls(recovered);
-    }
+  const candidate = sanitizeLooseCDATA(trimmed);
+  let parsed = parseMarkupToolCalls(candidate);
+  if (parsed.length === 0 && candidate !== trimmed) {
+    parsed = parseMarkupToolCalls(trimmed);
   }
   if (parsed.length === 0) {
     return result;

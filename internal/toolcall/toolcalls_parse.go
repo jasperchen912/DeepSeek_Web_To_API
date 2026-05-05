@@ -64,7 +64,7 @@ func parseToolCallsDetailedXMLOnly(text string) ToolCallParseResult {
 	// DSML-rewrite pass, otherwise the rewriter sees an unclosed CDATA and
 	// stops rewriting the rest of the document, leaving downstream tags in
 	// non-canonical form.
-	if strings.Contains(strings.ToLower(trimmed), "<![cdata[") {
+	if containsLooseCDATAOpening(trimmed) {
 		if repaired := SanitizeLooseCDATA(trimmed); repaired != trimmed {
 			trimmed = repaired
 		}
@@ -75,7 +75,7 @@ func parseToolCallsDetailedXMLOnly(text string) ToolCallParseResult {
 		return result
 	}
 	parsed := parseXMLToolCalls(normalized)
-	if len(parsed) == 0 && strings.Contains(strings.ToLower(normalized), "<![cdata[") {
+	if len(parsed) == 0 && containsLooseCDATAOpening(normalized) {
 		recovered := SanitizeLooseCDATA(normalized)
 		if recovered != normalized {
 			parsed = parseXMLToolCalls(recovered)

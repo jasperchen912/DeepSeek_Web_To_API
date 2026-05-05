@@ -115,16 +115,9 @@ func Flush(state *State, toolNames []string) []Event {
 			if content != "" {
 				recovered := toolcall.SanitizeLooseCDATA(content)
 				if recovered != content {
-					if prefix, calls, suffix, recoveredReady := consumeXMLToolCapture(recovered, toolNames); recoveredReady && len(calls) > 0 {
-						if prefix != "" {
-							state.noteText(prefix)
-							events = append(events, Event{Content: prefix})
-						}
-						events = append(events, Event{ToolCalls: calls})
-						if suffix != "" {
-							state.noteText(suffix)
-							events = append(events, Event{Content: suffix})
-						}
+					recoveredEvents := processRecoveredToolCapture(recovered, toolNames)
+					if eventsContainToolCalls(recoveredEvents) {
+						events = append(events, recoveredEvents...)
 					} else {
 						// If capture never resolved into a real tool call, release
 						// the buffered text instead of swallowing it.
@@ -151,6 +144,25 @@ func Flush(state *State, toolNames []string) []Event {
 		state.pending.Reset()
 	}
 	return events
+}
+
+func processRecoveredToolCapture(recovered string, toolNames []string) []Event {
+	if recovered == "" {
+		return nil
+	}
+	var recoveredState State
+	events := ProcessChunk(&recoveredState, recovered, toolNames)
+	events = append(events, Flush(&recoveredState, toolNames)...)
+	return events
+}
+
+func eventsContainToolCalls(events []Event) bool {
+	for _, evt := range events {
+		if len(evt.ToolCalls) > 0 || len(evt.ToolCallDeltas) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func splitSafeContentForToolDetection(state *State, s string) (safe, hold string) {

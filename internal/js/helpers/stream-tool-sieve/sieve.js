@@ -1,5 +1,6 @@
 'use strict';
 const {
+  createToolSieveState,
   resetIncrementalToolState,
   noteText,
   insideCodeFenceWithState,
@@ -120,17 +121,9 @@ function flushToolSieve(state, toolNames) {
       const content = state.capture;
       const recovered = sanitizeLooseCDATA(content);
       if (recovered !== content) {
-        const recoveredResult = consumeXMLToolCaptureImpl(recovered, toolNames, trimWrappingJSONFence);
-        if (recoveredResult.ready && Array.isArray(recoveredResult.calls) && recoveredResult.calls.length > 0) {
-          if (recoveredResult.prefix) {
-            noteText(state, recoveredResult.prefix);
-            events.push({ type: 'text', text: recoveredResult.prefix });
-          }
-          events.push({ type: 'tool_calls', calls: recoveredResult.calls });
-          if (recoveredResult.suffix) {
-            noteText(state, recoveredResult.suffix);
-            events.push({ type: 'text', text: recoveredResult.suffix });
-          }
+        const recoveredEvents = processRecoveredToolCapture(recovered, toolNames);
+        if (eventsContainToolCalls(recoveredEvents)) {
+          events.push(...recoveredEvents);
         } else {
           noteText(state, content);
           events.push({ type: 'text', text: content });
@@ -150,6 +143,26 @@ function flushToolSieve(state, toolNames) {
     state.pending = '';
   }
   return events;
+}
+
+function processRecoveredToolCapture(recovered, toolNames) {
+  if (!recovered) {
+    return [];
+  }
+  const recoveredState = createToolSieveState();
+  const events = processToolSieveChunk(recoveredState, recovered, toolNames);
+  events.push(...flushToolSieve(recoveredState, toolNames));
+  return events;
+}
+
+function eventsContainToolCalls(events) {
+  if (!Array.isArray(events)) {
+    return false;
+  }
+  return events.some((evt) => evt && (
+    (Array.isArray(evt.calls) && evt.calls.length > 0) ||
+    (Array.isArray(evt.deltas) && evt.deltas.length > 0)
+  ));
 }
 
 function splitSafeContentForToolDetection(state, s) {

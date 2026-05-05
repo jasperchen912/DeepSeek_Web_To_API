@@ -11,6 +11,8 @@ var toolCallMarkupKVPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?([a-z0
 
 // cdataPattern matches a standalone CDATA section.
 var cdataPattern = regexp.MustCompile(`(?is)^<!\[CDATA\[(.*?)]]>$`)
+var markdownCDATAOpenPattern = regexp.MustCompile(`(?is)<\*+!\[CDATA\[`)
+var markdownCDATAStandalonePattern = regexp.MustCompile(`(?is)^<\*+!\[CDATA\[(.*?)\*+>$`)
 
 func parseMarkupKVObject(text string) map[string]any {
 	matches := toolCallMarkupKVPattern.FindAllStringSubmatch(strings.TrimSpace(text), -1)
@@ -111,10 +113,23 @@ func extractStandaloneCDATA(inner string) (string, bool) {
 	if cdataMatches := cdataPattern.FindStringSubmatch(trimmed); len(cdataMatches) >= 2 {
 		return cdataMatches[1], true
 	}
+	if cdataMatches := markdownCDATAStandalonePattern.FindStringSubmatch(trimmed); len(cdataMatches) >= 2 {
+		return cdataMatches[1], true
+	}
 	if strings.HasPrefix(strings.ToLower(trimmed), "<![cdata[") {
 		return trimmed[len("<![CDATA["):], true
 	}
 	return "", false
+}
+
+func containsLooseCDATAOpening(text string) bool {
+	if text == "" {
+		return false
+	}
+	if strings.Contains(strings.ToLower(text), "<![cdata[") {
+		return true
+	}
+	return markdownCDATAOpenPattern.MatchString(text)
 }
 
 func parseJSONLiteralValue(raw string) (any, bool) {
@@ -145,13 +160,15 @@ func SanitizeLooseCDATA(text string) string {
 		return ""
 	}
 
+	normalized := markdownCDATAOpenPattern.ReplaceAllString(text, "<![CDATA[")
+	changed := normalized != text
+	text = normalized
 	lower := strings.ToLower(text)
 	const openMarker = "<![cdata["
 	const closeMarker = "]]>"
 
 	var b strings.Builder
 	b.Grow(len(text))
-	changed := false
 	pos := 0
 	for pos < len(text) {
 		startRel := strings.Index(lower[pos:], openMarker)
@@ -164,17 +181,37 @@ func SanitizeLooseCDATA(text string) string {
 		b.WriteString(text[pos:start])
 
 		properRel := strings.Index(text[contentStart:], closeMarker)
+		nestedOpenRel := strings.Index(lower[contentStart:], openMarker)
 		looseRel := findLooseCDATAClose(text, contentStart)
+		markdownRel := findMarkdownCDATAClose(text, contentStart)
+		parameterCloseRel := findUnclosedCDATAParameterClose(text, contentStart)
+		missingLTParameterCloseRel := findMissingLTCDATAParameterClose(text, contentStart)
+		earliestParameterCloseRel := minNonNegative(parameterCloseRel, missingLTParameterCloseRel)
+		if properRel >= 0 &&
+			nestedOpenRel >= 0 && nestedOpenRel < properRel &&
+			earliestParameterCloseRel >= 0 && earliestParameterCloseRel < nestedOpenRel {
+			properRel = -1
+		}
 
 		// Pick the earliest close. "]]>" wins on tie since it's the canonical form.
 		closePos := -1
-		loose := false
+		closeKind := 0
 		switch {
-		case properRel >= 0 && (looseRel < 0 || properRel <= looseRel):
+		case properRel >= 0:
 			closePos = contentStart + properRel
-		case looseRel >= 0:
+			closeKind = 1
+		case looseRel >= 0 && earliestCandidate(looseRel, markdownRel, parameterCloseRel, missingLTParameterCloseRel):
 			closePos = contentStart + looseRel
-			loose = true
+			closeKind = 2
+		case markdownRel >= 0 && earliestCandidate(markdownRel, parameterCloseRel, missingLTParameterCloseRel):
+			closePos = contentStart + markdownRel
+			closeKind = 3
+		case parameterCloseRel >= 0 && earliestCandidate(parameterCloseRel, missingLTParameterCloseRel):
+			closePos = contentStart + parameterCloseRel
+			closeKind = 4
+		case missingLTParameterCloseRel >= 0:
+			closePos = contentStart + missingLTParameterCloseRel
+			closeKind = 5
 		}
 
 		switch {
@@ -183,7 +220,7 @@ func SanitizeLooseCDATA(text string) string {
 			changed = true
 			b.WriteString(text[contentStart:])
 			pos = len(text)
-		case loose:
+		case closeKind == 2:
 			// Model emitted "]]<TAG" instead of "]]><TAG". Reproduce the
 			// opener + content + "]]" then synthesize the missing ">".
 			// "<TAG" at pos+2 is left for the next loop iteration to handle
@@ -192,6 +229,36 @@ func SanitizeLooseCDATA(text string) string {
 			b.WriteString(text[start:closePos]) // includes "<![CDATA[" + content
 			b.WriteString("]]>")
 			pos = closePos + 2 // skip "]]"
+		case closeKind == 3:
+			// Some Markdown renderers/models corrupt "<![CDATA[...]]>" into
+			// "<**![CDATA[...**>". Treat the paired stars as the CDATA shell
+			// only when they are immediately followed by the next markup tag.
+			changed = true
+			b.WriteString(text[start:closePos])
+			b.WriteString("]]>")
+			pos = closePos
+			for pos < len(text) && text[pos] == '*' {
+				pos++
+			}
+			if pos < len(text) && text[pos] == '>' {
+				pos++
+			}
+		case closeKind == 4:
+			// Model omitted the CDATA close before the parameter close tag.
+			// Synthesize it and leave the closing parameter tag to be copied on
+			// the next pass so following tool blocks are not swallowed as text.
+			changed = true
+			b.WriteString(text[start:closePos])
+			b.WriteString("]]>")
+			pos = closePos
+		case closeKind == 5:
+			// Model emitted only the ">" from "]]>" and omitted the "<" from
+			// the following parameter close, yielding "...value>/DSML|parameter>".
+			// Recreate both delimiters while preserving the slash/tag text.
+			changed = true
+			b.WriteString(text[start:closePos])
+			b.WriteString("]]><")
+			pos = closePos + 1
 		default:
 			b.WriteString(text[start : closePos+len(closeMarker)])
 			pos = closePos + len(closeMarker)
@@ -202,6 +269,28 @@ func SanitizeLooseCDATA(text string) string {
 		return text
 	}
 	return b.String()
+}
+
+func earliestCandidate(candidate int, others ...int) bool {
+	for _, other := range others {
+		if other >= 0 && other < candidate {
+			return false
+		}
+	}
+	return true
+}
+
+func minNonNegative(values ...int) int {
+	out := -1
+	for _, v := range values {
+		if v < 0 {
+			continue
+		}
+		if out < 0 || v < out {
+			out = v
+		}
+	}
+	return out
 }
 
 // findLooseCDATAClose returns the relative offset of "]]<TAG" inside text[from:],
@@ -217,6 +306,75 @@ func findLooseCDATAClose(text string, from int) int {
 			continue
 		}
 		if isLikelyTagStartAt(text, i+2) {
+			return i - from
+		}
+	}
+	return -1
+}
+
+func findMarkdownCDATAClose(text string, from int) int {
+	if from >= len(text) {
+		return -1
+	}
+	for i := from; i < len(text); i++ {
+		if text[i] != '*' {
+			continue
+		}
+		j := i
+		for j < len(text) && text[j] == '*' {
+			j++
+		}
+		if j-i < 2 || j >= len(text) || text[j] != '>' {
+			continue
+		}
+		if isLikelyCDATAEndFollowerAt(text, j+1) {
+			return i - from
+		}
+	}
+	return -1
+}
+
+func isLikelyCDATAEndFollowerAt(text string, idx int) bool {
+	if idx+1 >= len(text) || text[idx] != '<' || text[idx+1] != '/' {
+		return false
+	}
+	return isLikelyTagStartAt(text, idx)
+}
+
+func findUnclosedCDATAParameterClose(text string, from int) int {
+	if from >= len(text) {
+		return -1
+	}
+	for i := from; i < len(text); i++ {
+		if text[i] != '<' {
+			continue
+		}
+		tag, ok := scanToolMarkupTagAt(text, i)
+		if !ok {
+			continue
+		}
+		if tag.Closing && tag.Name == "parameter" {
+			return i - from
+		}
+		i = tag.End
+	}
+	return -1
+}
+
+func findMissingLTCDATAParameterClose(text string, from int) int {
+	if from >= len(text) {
+		return -1
+	}
+	for i := from; i+1 < len(text); i++ {
+		if text[i] != '>' || text[i+1] != '/' {
+			continue
+		}
+		candidate := "<" + text[i+1:]
+		tag, ok := scanToolMarkupTagAt(candidate, 0)
+		if !ok {
+			continue
+		}
+		if tag.Closing && tag.Name == "parameter" {
 			return i - from
 		}
 	}

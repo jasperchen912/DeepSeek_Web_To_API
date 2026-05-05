@@ -1,6 +1,7 @@
 package toolstream
 
 import (
+	"DeepSeek_Web_To_API/internal/toolcall"
 	"strings"
 	"testing"
 )
@@ -983,5 +984,83 @@ func TestProcessToolSieveDSMLBarePrefixVariantDoesNotLeak(t *testing.T) {
 	}
 	if toolCalls != 1 {
 		t.Fatalf("expected one tool call from DSML bare prefix variant, got %d events=%#v", toolCalls, events)
+	}
+}
+
+func TestProcessToolSieveMarkdownCorruptedDSMLCDATADoesNotLeak(t *testing.T) {
+	var state State
+	chunks := []string{
+		"<DSML|tool_calls>\n",
+		"<DSML|invoke name=\"exec\">\n",
+		"<DSML|parameter name=\"command\"><**![CDATA[python3 << 'PYEOF'\n",
+		"print(\"hi\")\n",
+		"PYEOF**></DSML|parameter>\n",
+		"<DSML|parameter name=\"timeout\"><10></DSML|parameter>\n",
+		"</DSML|invoke>\n",
+		"</DSML|tool_calls>",
+	}
+	var events []Event
+	for _, c := range chunks {
+		events = append(events, ProcessChunk(&state, c, nil)...)
+	}
+	events = append(events, Flush(&state, nil)...)
+
+	var textContent string
+	var calls []toolcall.ParsedToolCall
+	for _, evt := range events {
+		textContent += evt.Content
+		calls = append(calls, evt.ToolCalls...)
+	}
+	if strings.Contains(strings.ToLower(textContent), "dsml") || strings.Contains(textContent, "python3") {
+		t.Fatalf("markdown-corrupted DSML block leaked to text: %q", textContent)
+	}
+	if len(calls) != 1 || calls[0].Name != "exec" {
+		t.Fatalf("expected one exec tool call, got %#v events=%#v", calls, events)
+	}
+	if command, _ := calls[0].Input["command"].(string); strings.Contains(command, "CDATA") || !strings.Contains(command, "python3") {
+		t.Fatalf("unexpected recovered command: %#v", calls[0].Input)
+	}
+}
+
+func TestProcessToolSieveUnclosedCDATAThenSecondDSMLBlockDoesNotLeak(t *testing.T) {
+	var state State
+	chunks := []string{
+		"<DSML|tool_calls>\n",
+		"<DSML|invoke name=\"exec\">\n",
+		"<DSML|parameter name=\"command\"><![CDATA[cp /Users/jiajunch/.openclaw/openclaw.json \"/Users/jiajunch/.openclaw/openclaw.json.backup-$(date +%Y%m%d-%H%M%S)\" && echo \"BACKUP_OK\"></DSML|parameter>\n",
+		"<DSML|parameter name=\"timeout\"><10></DSML|parameter>\n",
+		"</DSML|invoke>\n",
+		"</DSML|tool_calls>\n\n",
+		"<DSML|tool_calls>\n",
+		"<DSML|invoke name=\"cron\">\n",
+		"<DSML|parameter name=\"action\"><![CDATA[list]]></DSML|parameter>\n",
+		"</DSML|invoke>\n",
+		"</DSML|tool_calls>",
+	}
+	var events []Event
+	for _, c := range chunks {
+		events = append(events, ProcessChunk(&state, c, nil)...)
+	}
+	events = append(events, Flush(&state, nil)...)
+
+	var textContent string
+	var calls []toolcall.ParsedToolCall
+	for _, evt := range events {
+		textContent += evt.Content
+		calls = append(calls, evt.ToolCalls...)
+	}
+	if strings.Contains(strings.ToLower(textContent), "dsml") ||
+		strings.Contains(textContent, "openclaw.json") ||
+		strings.Contains(textContent, "cron") {
+		t.Fatalf("DSML blocks leaked to text: %q", textContent)
+	}
+	if len(calls) != 2 || calls[0].Name != "exec" || calls[1].Name != "cron" {
+		t.Fatalf("expected exec and cron tool calls, got %#v events=%#v", calls, events)
+	}
+	if command, _ := calls[0].Input["command"].(string); !strings.Contains(command, "BACKUP_OK") || strings.Contains(command, "CDATA") || strings.Contains(command, "DSML") {
+		t.Fatalf("unexpected recovered exec command: %#v", calls[0].Input)
+	}
+	if action, _ := calls[1].Input["action"].(string); action != "list" {
+		t.Fatalf("unexpected cron action: %#v", calls[1].Input)
 	}
 }

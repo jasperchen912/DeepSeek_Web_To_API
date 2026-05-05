@@ -6,12 +6,30 @@ func BuildChatUsageForModel(model, finalPrompt, finalThinking, finalText string,
 	promptTokens := util.CountPromptTokens(finalPrompt, model) + refFileTokens
 	reasoningTokens := util.CountOutputTokens(finalThinking, model)
 	completionTokens := util.CountOutputTokens(finalText, model)
+	outputTokens := reasoningTokens + completionTokens
+	totalTokens := promptTokens + outputTokens
 	return map[string]any{
 		"prompt_tokens":     promptTokens,
-		"completion_tokens": reasoningTokens + completionTokens,
-		"total_tokens":      promptTokens + reasoningTokens + completionTokens,
+		"completion_tokens": outputTokens,
+		"total_tokens":      totalTokens,
+		"prompt_tokens_details": map[string]any{
+			"cached_tokens":      0,
+			"cache_write_tokens": 0,
+		},
 		"completion_tokens_details": map[string]any{
 			"reasoning_tokens": reasoningTokens,
+		},
+		"input":       promptTokens,
+		"output":      outputTokens,
+		"cacheRead":   0,
+		"cacheWrite":  0,
+		"totalTokens": totalTokens,
+		"cost": map[string]any{
+			"input":      0,
+			"output":     0,
+			"cacheRead":  0,
+			"cacheWrite": 0,
+			"total":      0,
 		},
 	}
 }

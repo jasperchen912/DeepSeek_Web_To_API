@@ -193,6 +193,30 @@ test('parseToolCalls recovers when CDATA never closes inside a valid wrapper', (
   assert.equal(calls[0].input.content, 'hello world');
 });
 
+test('parseToolCalls recovers unclosed CDATA before additional DSML block', () => {
+  const payload = [
+    '<DSML|tool_calls>',
+    '<DSML|invoke name="exec">',
+    '<DSML|parameter name="command"><![CDATA[cp /Users/jiajunch/.openclaw/openclaw.json "/Users/jiajunch/.openclaw/openclaw.json.backup-$(date +%Y%m%d-%H%M%S)" && echo "BACKUP_OK"></DSML|parameter>',
+    '<DSML|parameter name="timeout"><10></DSML|parameter>',
+    '</DSML|invoke>',
+    '</DSML|tool_calls>',
+    '',
+    '<DSML|tool_calls>',
+    '<DSML|invoke name="cron">',
+    '<DSML|parameter name="action"><![CDATA[list]]></DSML|parameter>',
+    '</DSML|invoke>',
+    '</DSML|tool_calls>',
+  ].join('\n');
+  const calls = parseToolCalls(payload, []);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].name, 'exec');
+  assert.equal(calls[1].name, 'cron');
+  assert.equal(calls[0].input.command.includes('BACKUP_OK'), true);
+  assert.equal(calls[0].input.command.includes('DSML'), false);
+  assert.equal(calls[1].input.action, 'list');
+});
+
 test('parseToolCalls supports JSON scalar parameters', () => {
   const payload = '<tool_calls><invoke name="configure"><parameter name="count">123</parameter><parameter name="max_tokens"><![CDATA[256]]></parameter><parameter name="enabled">true</parameter></invoke></tool_calls>';
   const calls = parseToolCalls(payload, ['configure']);
@@ -628,6 +652,34 @@ test('sieve recovers when CDATA never closes inside a valid wrapper', () => {
   assert.equal(finalCalls[0].name, 'Write');
   assert.equal(finalCalls[0].input.content, 'hello world');
   assert.equal(leakedText, '');
+});
+
+test('sieve recovers unclosed CDATA before additional DSML block without leaking suffix', () => {
+  const events = runSieve(
+    [
+      '<DSML|tool_calls>\n',
+      '<DSML|invoke name="exec">\n',
+      '<DSML|parameter name="command"><![CDATA[cp /Users/jiajunch/.openclaw/openclaw.json "/Users/jiajunch/.openclaw/openclaw.json.backup-$(date +%Y%m%d-%H%M%S)" && echo "BACKUP_OK"></DSML|parameter>\n',
+      '<DSML|parameter name="timeout"><10></DSML|parameter>\n',
+      '</DSML|invoke>\n',
+      '</DSML|tool_calls>\n\n',
+      '<DSML|tool_calls>\n',
+      '<DSML|invoke name="cron">\n',
+      '<DSML|parameter name="action"><![CDATA[list]]></DSML|parameter>\n',
+      '</DSML|invoke>\n',
+      '</DSML|tool_calls>',
+    ],
+    [],
+  );
+  const leakedText = collectText(events);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  assert.equal(leakedText, '');
+  assert.equal(finalCalls.length, 2);
+  assert.equal(finalCalls[0].name, 'exec');
+  assert.equal(finalCalls[1].name, 'cron');
+  assert.equal(finalCalls[0].input.command.includes('BACKUP_OK'), true);
+  assert.equal(finalCalls[0].input.command.includes('DSML'), false);
+  assert.equal(finalCalls[1].input.action, 'list');
 });
 
 test('sieve keeps CDATA tool examples buffered until the outer closing tag arrives', () => {

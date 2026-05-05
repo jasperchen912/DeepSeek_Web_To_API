@@ -18,9 +18,18 @@ func addRefFileTokensToUsage(obj map[string]any, refFileTokens int) {
 			}
 		}
 	}
-	if v, ok := usage["total_tokens"]; ok {
+	for _, key := range []string{"total_tokens", "totalTokens"} {
+		v, ok := usage[key]
+		if !ok {
+			continue
+		}
 		if n, ok := v.(int); ok {
-			usage["total_tokens"] = n + refFileTokens
+			usage[key] = n + refFileTokens
+		}
+	}
+	if v, ok := usage["input"]; ok {
+		if n, ok := v.(int); ok {
+			usage["input"] = n + refFileTokens
 		}
 	}
 }

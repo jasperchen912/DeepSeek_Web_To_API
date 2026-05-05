@@ -227,7 +227,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 	}
 
 	created := time.Now().Unix()
-	bufferToolContent := len(toolNames) > 0
+	bufferToolContent := shared.ShouldBufferStreamToolContent(finalPrompt, toolNames)
 	emitEarlyToolDeltas := h.toolcallFeatureMatchEnabled() && h.toolcallEarlyEmitHighConfidence()
 	stripReferenceMarkers := h.compatStripReferenceMarkers()
 	initialType := "text"

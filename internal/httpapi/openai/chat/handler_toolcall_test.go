@@ -72,6 +72,21 @@ func streamHasToolCallsDelta(frames []map[string]any) bool {
 	return false
 }
 
+func streamContentDeltas(frames []map[string]any) []string {
+	var out []string
+	for _, frame := range frames {
+		choices, _ := frame["choices"].([]any)
+		for _, item := range choices {
+			choice, _ := item.(map[string]any)
+			delta, _ := choice["delta"].(map[string]any)
+			if content := asString(delta["content"]); content != "" {
+				out = append(out, content)
+			}
+		}
+	}
+	return out
+}
+
 func streamFinishReason(frames []map[string]any) string {
 	for _, frame := range frames {
 		choices, _ := frame["choices"].([]any)
@@ -507,6 +522,46 @@ func TestHandleStreamPromotesHiddenThinkingDSMLToolCallsOnFinalize(t *testing.T)
 			if asString(delta["reasoning_content"]) != "" {
 				t.Fatalf("did not expect hidden reasoning_content delta, body=%s", rec.Body.String())
 			}
+		}
+	}
+	if streamFinishReason(frames) != "tool_calls" {
+		t.Fatalf("expected finish_reason=tool_calls, body=%s", rec.Body.String())
+	}
+}
+
+func TestHandleStreamBuffersPromptVisibleDSMLToolCallsWithoutDeclaredTools(t *testing.T) {
+	h := &Handler{}
+	line := func(v string) string {
+		b, _ := json.Marshal(map[string]any{"p": "response/content", "v": v})
+		return "data: " + string(b)
+	}
+	resp := makeSSEHTTPResponse(
+		line("<DSML|tool_calls>\n"),
+		line("<DSML|invoke name=\"exec\">\n"),
+		line("<DSML|parameter name=\"command\"><![CDATA[cp /Users/jiajunch/.openclaw/openclaw.json \"/Users/jiajunch/.openclaw/openclaw.json.backup-$(date +%Y%m%d-%H%M%S)\" && echo \"BACKUP_OK\"></DSML|parameter>\n"),
+		line("<DSML|parameter name=\"timeout\"><10></DSML|parameter>\n</DSML|invoke>\n</DSML|tool_calls>"),
+		line("\n\n<DSML|tool_calls>\n<DSML|invoke name=\"cron\">\n<DSML|parameter name=\"action\"><![CDATA[list]]></DSML|parameter>\n</DSML|invoke>\n</DSML|tool_calls>"),
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	finalPrompt := "System tool contract:\n<DSML|tool_calls><DSML|invoke name=\"exec\"></DSML|invoke></DSML|tool_calls>"
+
+	h.handleStream(rec, req, resp, "cid-openclaw-dsml", "deepseek-v4-pro", finalPrompt, 0, false, false, false, nil, nil, nil)
+
+	frames, done := parseSSEDataFrames(t, rec.Body.String())
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", rec.Body.String())
+	}
+	if !streamHasToolCallsDelta(frames) {
+		t.Fatalf("expected tool_calls delta for prompt-visible DSML tools, body=%s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"name":"exec"`) || !strings.Contains(rec.Body.String(), `"name":"cron"`) {
+		t.Fatalf("expected both recovered tool calls, body=%s", rec.Body.String())
+	}
+	for _, content := range streamContentDeltas(frames) {
+		if strings.Contains(strings.ToLower(content), "dsml") || strings.Contains(content, "tool_calls") {
+			t.Fatalf("DSML markup leaked as content delta %q, body=%s", content, rec.Body.String())
 		}
 	}
 	if streamFinishReason(frames) != "tool_calls" {

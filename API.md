@@ -28,6 +28,8 @@
 
 同时支持 `/models`、`/chat/completions`、`/responses`、`/files`、`/embeddings` 根路径别名，以及 `/v1/v1/*` 兼容别名。
 
+`/v1/models` 和 `/v1/models/{model_id}` 的 DeepSeek 模型对象包含 OpenAI 基础字段，并额外返回 `input`、`output` 和零值 `cost`，用于兼容会读取模型能力或计费单价的网关。Chat Completions 的 `usage` 保留 `prompt_tokens`、`completion_tokens`、`total_tokens`，并补充 `prompt_tokens_details`、`completion_tokens_details`、`input`、`output`、`cacheRead`、`cacheWrite`、`totalTokens` 和零值 `cost`。
+
 示例：
 
 ```bash

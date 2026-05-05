@@ -91,6 +91,63 @@ func TestParseToolCallsRecoversFromMalformedCDATAClose(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsRecoversFromMarkdownCorruptedCDATA(t *testing.T) {
+	text := strings.Join([]string{
+		"<DSML|tool_calls>",
+		"<DSML|invoke name=\"exec\">",
+		"<DSML|parameter name=\"command\"><**![CDATA[python3 << 'PYEOF'",
+		"print(\"hi\")",
+		"PYEOF**></DSML|parameter>",
+		"<DSML|parameter name=\"timeout\"><10></DSML|parameter>",
+		"</DSML|invoke>",
+		"</DSML|tool_calls>",
+	}, "\n")
+	calls := ParseToolCalls(text, nil)
+	if len(calls) != 1 {
+		t.Fatalf("expected one call from markdown-corrupted CDATA, got %#v", calls)
+	}
+	if calls[0].Name != "exec" {
+		t.Fatalf("expected exec call, got %#v", calls[0])
+	}
+	command, _ := calls[0].Input["command"].(string)
+	if strings.Contains(command, "CDATA") || strings.Contains(command, "**>") {
+		t.Fatalf("expected corrupted CDATA shell to be stripped, got %q", command)
+	}
+	if !strings.Contains(command, "python3 << 'PYEOF'") || !strings.Contains(command, `print("hi")`) {
+		t.Fatalf("expected command body to survive, got %q", command)
+	}
+}
+
+func TestParseToolCallsRecoversUnclosedCDATABeforeAdditionalDSMLBlock(t *testing.T) {
+	text := strings.Join([]string{
+		"<DSML|tool_calls>",
+		"<DSML|invoke name=\"exec\">",
+		"<DSML|parameter name=\"command\"><![CDATA[cp /Users/jiajunch/.openclaw/openclaw.json \"/Users/jiajunch/.openclaw/openclaw.json.backup-$(date +%Y%m%d-%H%M%S)\" && echo \"BACKUP_OK\"></DSML|parameter>",
+		"<DSML|parameter name=\"timeout\"><10></DSML|parameter>",
+		"</DSML|invoke>",
+		"</DSML|tool_calls>",
+		"",
+		"<DSML|tool_calls>",
+		"<DSML|invoke name=\"cron\">",
+		"<DSML|parameter name=\"action\"><![CDATA[list]]></DSML|parameter>",
+		"</DSML|invoke>",
+		"</DSML|tool_calls>",
+	}, "\n")
+	calls := ParseToolCalls(text, nil)
+	if len(calls) != 2 {
+		t.Fatalf("expected two calls from unclosed CDATA sample, got %#v", calls)
+	}
+	if calls[0].Name != "exec" || calls[1].Name != "cron" {
+		t.Fatalf("expected exec then cron calls, got %#v", calls)
+	}
+	if command, _ := calls[0].Input["command"].(string); !strings.Contains(command, "BACKUP_OK") || strings.Contains(command, "CDATA") || strings.Contains(command, "DSML") {
+		t.Fatalf("unexpected command argument: %#v", calls[0].Input)
+	}
+	if action, _ := calls[1].Input["action"].(string); action != "list" {
+		t.Fatalf("unexpected cron action: %#v", calls[1].Input)
+	}
+}
+
 // TestParseToolCallsSupportsTrailingPipeBeforeClose covers wrappers that close
 // with "|>" instead of plain ">", e.g. "<|DSML|tool_calls|>".
 func TestParseToolCallsSupportsTrailingPipeBeforeClose(t *testing.T) {

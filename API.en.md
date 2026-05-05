@@ -27,6 +27,8 @@ Default Base URL: `http://127.0.0.1:5001`.
 
 Root aliases and `/v1/v1/*` aliases are also supported.
 
+DeepSeek model objects returned by `/v1/models` and `/v1/models/{model_id}` include the base OpenAI fields plus `input`, `output`, and zero-valued `cost` metadata for gateways that inspect model capabilities or pricing. Chat Completions `usage` keeps `prompt_tokens`, `completion_tokens`, and `total_tokens`, and also includes `prompt_tokens_details`, `completion_tokens_details`, `input`, `output`, `cacheRead`, `cacheWrite`, `totalTokens`, and zero-valued `cost`.
+
 ## Claude-Compatible Routes
 
 | Method | Path | Description |
