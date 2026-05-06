@@ -868,6 +868,42 @@ func TestParseToolCallsToleratesDSMLFullwidthGreaterTerminators(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsToleratesDSMLCurlyColonPrefix(t *testing.T) {
+	text := strings.Join([]string{
+		"<{:DSML}tool_calls>",
+		"<{:DSML}invoke name=\"process\">",
+		"<{:DSML}parameter name=\"action\"><![CDATA[poll]]></{:DSML}parameter>",
+		"<{:DSML}parameter name=\"sessionId\"><![CDATA[glow-seaslug]]></{:DSML}parameter>",
+		"<{:DSML}parameter name=\"timeout\"><![CDATA[10000]]></{:DSML}parameter>",
+		"</{:DSML}invoke>",
+		"<{:DSML}invoke name=\"exec\">",
+		"<{:DSML}parameter name=\"command\"><![CDATA[find /Users/jiajunch -maxdepth 6 -type d -iname \"ds2api\" 2>/dev/null]]></{:DSML}parameter>",
+		"</{:DSML}invoke>",
+		"</{:DSML}tool_calls>",
+	}, "\n")
+	calls := ParseToolCalls(text, []string{"process", "exec"})
+	if len(calls) != 2 {
+		t.Fatalf("expected two calls from {:DSML} prefix variant, got %#v", calls)
+	}
+	if calls[0].Name != "process" || calls[0].Input["action"] != "poll" || calls[0].Input["sessionId"] != "glow-seaslug" || calls[0].Input["timeout"] != float64(10000) {
+		t.Fatalf("unexpected process call: %#v", calls[0])
+	}
+	if calls[1].Name != "exec" {
+		t.Fatalf("expected exec call, got %#v", calls[1])
+	}
+	if got, _ := calls[1].Input["command"].(string); !strings.Contains(got, "find /Users/jiajunch") {
+		t.Fatalf("expected command CDATA to parse, got %q", got)
+	}
+}
+
+func TestPartialToolMarkupPrefixToleratesDSMLCurlyColonPrefix(t *testing.T) {
+	for _, input := range []string{"<{", "<{:", "<{:D", "<{:DSML", "<{:DSML}", "<{:DSML}tool_ca"} {
+		if !IsPartialToolMarkupTagPrefix(input) {
+			t.Fatalf("expected %q to be treated as partial DSML tool prefix", input)
+		}
+	}
+}
+
 func TestParseToolCallsDoesNotAcceptDSMLZeroWidthLowLineLookalikeTagName(t *testing.T) {
 	sep := "\u200d\u2581"
 	text := strings.Join([]string{

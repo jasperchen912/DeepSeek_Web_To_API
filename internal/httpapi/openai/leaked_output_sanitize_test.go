@@ -99,6 +99,23 @@ func TestSanitizeLeakedOutputRemovesCompleteDSMLToolCallWrapper(t *testing.T) {
 	}
 }
 
+func TestSanitizeLeakedOutputRemovesCurlyColonDSMLToolCallWrapper(t *testing.T) {
+	raw := strings.Join([]string{
+		"前置文本",
+		"<{:DSML}tool_calls>",
+		"<{:DSML}invoke name=\"process\">",
+		"<{:DSML}parameter name=\"action\"><![CDATA[poll]]></{:DSML}parameter>",
+		"<{:DSML}parameter name=\"sessionId\"><![CDATA[glow-seaslug]]></{:DSML}parameter>",
+		"</{:DSML}invoke>",
+		"</{:DSML}tool_calls>",
+		"后置文本",
+	}, "\n")
+	got := sanitizeLeakedOutput(raw)
+	if got != "前置文本\n\n后置文本" {
+		t.Fatalf("unexpected sanitize result for {:DSML} wrapper: %q", got)
+	}
+}
+
 func TestSanitizeLeakedOutputRemovesAgentXMLLeaks(t *testing.T) {
 	raw := "Done.<attempt_completion><result>Some final answer</result></attempt_completion>"
 	got := sanitizeLeakedOutput(raw)
