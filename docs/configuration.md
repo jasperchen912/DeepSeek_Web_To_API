@@ -135,6 +135,7 @@ STORE --> SAVE
 - 若旧 JSON 中仍有 `accounts`，账号 SQLite 为空时会自动迁移，随后保存配置时会剥离 `accounts` 字段。
 - 账号 token 不写回结构化配置文件；运行态 token 保存在账号 SQLite 中。
 - 代理只支持 `socks5` 与 `socks5h`，账号的 `proxy_id` 必须引用已存在代理。
+- 长流式请求由 `server.http_total_timeout_seconds` 控制入口 HTTP read/write timeout 和上游非流式总超时，默认 `7200` 秒；反代或上游网关还需要配置不低于该值的读取超时。
 
 ### 缓存默认值
 

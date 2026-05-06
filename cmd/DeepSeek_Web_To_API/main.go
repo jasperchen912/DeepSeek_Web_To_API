@@ -42,15 +42,7 @@ func main() {
 	port := app.Store.ServerPort()
 	bindAddr := app.Store.ServerBindAddr()
 
-	srv := &http.Server{
-		Addr:              bindAddr + ":" + port,
-		Handler:           app.Router,
-		ReadHeaderTimeout: 15 * time.Second,
-		ReadTimeout:       120 * time.Second,
-		WriteTimeout:      120 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
+	srv := newHTTPServer(bindAddr+":"+port, app.Router, app.Store.HTTPTotalTimeout())
 	localURL := fmt.Sprintf("http://127.0.0.1:%s", port)
 	lanIP := detectLANIPv4()
 	lanURL := ""
@@ -87,6 +79,21 @@ func main() {
 		os.Exit(1)
 	}
 	config.Logger.Info("server gracefully stopped")
+}
+
+func newHTTPServer(addr string, handler http.Handler, totalTimeout time.Duration) *http.Server {
+	if totalTimeout <= 0 {
+		totalTimeout = config.HTTPTotalTimeout()
+	}
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       totalTimeout,
+		WriteTimeout:      totalTimeout,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 }
 
 func detectLANIPv4() string {
