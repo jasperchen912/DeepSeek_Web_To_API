@@ -209,11 +209,11 @@ func findMatchingXMLEndTagOutsideCDATA(text, tag string, from int) (closeStart, 
 func skipXMLIgnoredSection(lower string, i int) (next int, advanced bool, blocked bool) {
 	switch {
 	case strings.HasPrefix(lower[i:], "<![cdata["):
-		end := strings.Index(lower[i+len("<![cdata["):], "]]>")
-		if end < 0 {
+		end, markerLen, ok := findCDATAEnd(lower, i+len("<![cdata["))
+		if !ok {
 			return 0, false, true
 		}
-		return i + len("<![cdata[") + end + len("]]>"), true, false
+		return end + markerLen, true, false
 	case strings.HasPrefix(lower[i:], "<!--"):
 		end := strings.Index(lower[i+len("<!--"):], "-->")
 		if end < 0 {
@@ -222,6 +222,24 @@ func skipXMLIgnoredSection(lower string, i int) (next int, advanced bool, blocke
 		return i + len("<!--") + end + len("-->"), true, false
 	default:
 		return i, false, false
+	}
+}
+
+func findCDATAEnd(lower string, from int) (idx int, markerLen int, ok bool) {
+	if from >= len(lower) {
+		return 0, 0, false
+	}
+	const asciiClose = "]]>"
+	const fullwidthClose = "]]＞"
+	asciiRel := strings.Index(lower[from:], asciiClose)
+	fullwidthRel := strings.Index(lower[from:], fullwidthClose)
+	switch {
+	case asciiRel < 0 && fullwidthRel < 0:
+		return 0, 0, false
+	case asciiRel >= 0 && (fullwidthRel < 0 || asciiRel <= fullwidthRel):
+		return from + asciiRel, len(asciiClose), true
+	default:
+		return from + fullwidthRel, len(fullwidthClose), true
 	}
 }
 
@@ -242,6 +260,9 @@ func findXMLTagEnd(text string, from int) int {
 		if ch == '>' {
 			return i
 		}
+		if strings.HasPrefix(text[i:], "＞") {
+			return i + len("＞") - 1
+		}
 	}
 	return -1
 }
@@ -254,12 +275,13 @@ func hasXMLTagBoundary(text string, idx int) bool {
 	case ' ', '\t', '\n', '\r', '>', '/':
 		return true
 	default:
-		return false
+		return strings.HasPrefix(text[idx:], "＞")
 	}
 }
 
 func isSelfClosingXMLTag(startTag string) bool {
-	return strings.HasSuffix(strings.TrimSpace(startTag), "/")
+	trimmed := strings.TrimSpace(startTag)
+	return strings.HasSuffix(trimmed, "/") || strings.HasSuffix(trimmed, "/＞")
 }
 
 func maxInt(a, b int) int {

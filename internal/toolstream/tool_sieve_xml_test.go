@@ -925,6 +925,42 @@ func TestProcessToolSieveZeroWidthLowLineDSMLVariantDoesNotLeak(t *testing.T) {
 	}
 }
 
+func TestProcessToolSieveFullwidthGreaterDSMLVariantDoesNotLeak(t *testing.T) {
+	var state State
+	chunks := []string{
+		"<｜DSML▁tool_calls｜>\n",
+		"<｜DSML▁invoke name=\"process\"＞\n",
+		"<｜DSML▁parameter name=\"action\"＞<![CDATA[poll]]＞</｜DSML▁parameter＞\n",
+		"<｜DSML▁parameter name=\"sessionId\"＞<![CDATA[mild-breeze]]＞</｜DSML▁parameter＞\n",
+		"<｜DSML▁parameter name=\"timeout\"＞10000</｜DSML▁parameter＞\n",
+		"</｜DSML▁invoke＞\n",
+		"</｜DSML▁tool_calls＞",
+	}
+	var events []Event
+	for _, c := range chunks {
+		events = append(events, ProcessChunk(&state, c, []string{"process"})...)
+	}
+	events = append(events, Flush(&state, []string{"process"})...)
+
+	var textContent strings.Builder
+	var calls []toolcall.ParsedToolCall
+	for _, evt := range events {
+		textContent.WriteString(evt.Content)
+		calls = append(calls, evt.ToolCalls...)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected one tool call from fullwidth-greater DSML variant, got %d events=%#v", len(calls), events)
+	}
+	if calls[0].Name != "process" || calls[0].Input["action"] != "poll" || calls[0].Input["sessionId"] != "mild-breeze" || calls[0].Input["timeout"] != float64(10000) {
+		t.Fatalf("unexpected parsed call: %#v", calls[0])
+	}
+	if strings.Contains(strings.ToLower(textContent.String()), "dsml") ||
+		strings.Contains(textContent.String(), "tool_calls") ||
+		strings.Contains(textContent.String(), "mild-breeze") {
+		t.Fatalf("fullwidth-greater DSML variant leaked to text: %q", textContent.String())
+	}
+}
+
 // Test <DSML|tool_calls> with <|DSML|invoke> (DSML prefix without leading pipe on wrapper).
 func TestProcessToolSieveDSMLPrefixVariantDoesNotLeak(t *testing.T) {
 	var state State

@@ -82,6 +82,22 @@ test('parseToolCalls tolerates tokenized DSML prefix separators', () => {
   assert.equal(calls[2].input.query, 'Portugal public school digital nomad children enrollment quality free education expat 2025 2026');
 });
 
+test('parseToolCalls tolerates fullwidth greater DSML terminators', () => {
+  const payload = [
+    '<｜DSML▁tool_calls｜>',
+    '<｜DSML▁invoke name="process"＞',
+    '<｜DSML▁parameter name="action"＞<![CDATA[poll]]＞</｜DSML▁parameter＞',
+    '<｜DSML▁parameter name="sessionId"＞<![CDATA[mild-breeze]]＞</｜DSML▁parameter＞',
+    '<｜DSML▁parameter name="timeout"＞10000</｜DSML▁parameter＞',
+    '</｜DSML▁invoke＞',
+    '</｜DSML▁tool_calls＞',
+  ].join('\n');
+  const calls = parseToolCalls(payload, ['process']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'process');
+  assert.deepEqual(calls[0].input, { action: 'poll', sessionId: 'mild-breeze', timeout: 10000 });
+});
+
 test('parseToolCalls ignores token artifacts without DSML prefix', () => {
   const payload = '<\u200d\u2581tool_calls><invoke name="web_search"><parameter name="query">x</parameter></invoke></\u200d\u2581tool_calls>';
   const calls = parseToolCalls(payload, ['web_search']);
@@ -615,6 +631,25 @@ test('sieve emits tool_calls for tokenized DSML prefix separators', () => {
   assert.equal(finalCalls.length, 1);
   assert.equal(finalCalls[0].name, 'web_search');
   assert.equal(finalCalls[0].input.count, 8);
+});
+
+test('sieve emits tool_calls for fullwidth greater DSML variant without leaking markup', () => {
+  const chunks = [
+    '<｜DSML▁tool_calls｜>\n',
+    '<｜DSML▁invoke name="process"＞\n',
+    '<｜DSML▁parameter name="action"＞<![CDATA[poll]]＞</｜DSML▁parameter＞\n',
+    '<｜DSML▁parameter name="sessionId"＞<![CDATA[mild-breeze]]＞</｜DSML▁parameter＞\n',
+    '<｜DSML▁parameter name="timeout"＞10000</｜DSML▁parameter＞\n',
+    '</｜DSML▁invoke＞\n',
+    '</｜DSML▁tool_calls＞',
+  ];
+  const events = runSieve(chunks, ['process']);
+  const leakedText = collectText(events);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  assert.equal(leakedText, '');
+  assert.equal(finalCalls.length, 1);
+  assert.equal(finalCalls[0].name, 'process');
+  assert.deepEqual(finalCalls[0].input, { action: 'poll', sessionId: 'mild-breeze', timeout: 10000 });
 });
 
 test('sieve keeps long XML tool calls buffered until the closing tag arrives', () => {

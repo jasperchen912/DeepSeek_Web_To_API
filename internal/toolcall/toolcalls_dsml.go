@@ -49,7 +49,7 @@ func rewriteDSMLToolMarkupOutsideIgnored(text string) string {
 			// pure canonical XML the downstream parser expects.
 			tail := stripDSMLTrailingPipe(text[tag.NameEnd : tag.End+1])
 			b.WriteString(tail)
-			if text[tag.End] != '>' {
+			if !strings.HasSuffix(tail, ">") {
 				b.WriteByte('>')
 			}
 			i = tag.End + 1
@@ -70,16 +70,29 @@ func stripDSMLTrailingPipe(seg string) string {
 	if seg == "" {
 		return seg
 	}
-	if !strings.HasSuffix(seg, ">") {
+	fullwidthEnd := false
+	end := ">"
+	switch {
+	case strings.HasSuffix(seg, "＞"):
+		end = "＞"
+		fullwidthEnd = true
+	case strings.HasSuffix(seg, ">"):
+	default:
 		return seg
 	}
-	body := seg[:len(seg)-1]
+	body := strings.TrimSuffix(seg, end)
 	body = strings.TrimRight(body, " \t\r\n")
+	strippedPipe := false
 	if strings.HasSuffix(body, "|") {
 		body = strings.TrimSuffix(body, "|")
+		strippedPipe = true
 	} else if strings.HasSuffix(body, "｜") {
 		body = strings.TrimSuffix(body, "｜")
-	} else {
+		strippedPipe = true
+	} else if !fullwidthEnd {
+		return seg
+	}
+	if !strippedPipe && !fullwidthEnd {
 		return seg
 	}
 	return strings.TrimRight(body, " \t\r\n") + ">"

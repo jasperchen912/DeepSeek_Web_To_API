@@ -121,7 +121,7 @@ OpenAI Chat 使用 `messages`；Responses 可能使用 `input` 字符串、数�
 
 Chat Completions 的最终响应和流式结束块会返回标准 OpenAI token 字段，并额外带上部分网关依赖的兼容字段：`prompt_tokens_details`、`completion_tokens_details`、`input`、`output`、`cacheRead`、`cacheWrite`、`totalTokens` 和零值 `cost`。`/v1/models` 中的 DeepSeek 模型也会暴露 `input`、`output` 与零值 `cost` 元数据，避免客户端在按模型计费或读取 token 结构时遇到缺失字段。
 
-流式 Chat Completions 与 Responses 在请求声明 OpenAI `tools` 时会启用 tool sieve；如果没有显式 `tools`，但最终 prompt 中已经存在 DSML/XML tool-call wrapper（例如第三方客户端自行注入的 `<DSML|tool_calls>` 工具协议），流式层同样会缓冲并解析这些工具块，避免拆分 chunk 时把 DSML 标签作为普通 assistant 文本发给下游 channel。
+流式 Chat Completions 与 Responses 在请求声明 OpenAI `tools` 时会启用 tool sieve；如果没有显式 `tools`，但最终 prompt 中已经存在 DSML/XML tool-call wrapper（例如第三方客户端自行注入的 `<DSML|tool_calls>` 工具协议），流式层同样会缓冲并解析这些工具块。缓冲解析会兼容全角竖线、`▁` 分隔符和全角 `＞` 终止符等常见 DSML 变体，避免拆分 chunk 时把 DSML 标签作为普通 assistant 文本发给下游 channel。
 
 ### Claude Messages
 

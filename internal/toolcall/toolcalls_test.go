@@ -840,6 +840,34 @@ func TestParseToolCallsToleratesDSMLZeroWidthLowLineSeparators(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsToleratesDSMLFullwidthGreaterTerminators(t *testing.T) {
+	text := strings.Join([]string{
+		"<｜DSML▁tool_calls｜>",
+		"<｜DSML▁invoke name=\"process\"＞",
+		"<｜DSML▁parameter name=\"action\"＞<![CDATA[poll]]＞</｜DSML▁parameter＞",
+		"<｜DSML▁parameter name=\"sessionId\"＞<![CDATA[mild-breeze]]＞</｜DSML▁parameter＞",
+		"<｜DSML▁parameter name=\"timeout\"＞10000</｜DSML▁parameter＞",
+		"</｜DSML▁invoke＞",
+		"</｜DSML▁tool_calls＞",
+	}, "\n")
+	calls := ParseToolCalls(text, []string{"process"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one call from fullwidth terminator DSML tags, got %#v", calls)
+	}
+	if calls[0].Name != "process" {
+		t.Fatalf("expected process call, got %#v", calls[0])
+	}
+	if got, _ := calls[0].Input["action"].(string); got != "poll" {
+		t.Fatalf("expected action to parse from CDATA, got %q", got)
+	}
+	if got, _ := calls[0].Input["sessionId"].(string); got != "mild-breeze" {
+		t.Fatalf("expected sessionId to parse from CDATA, got %q", got)
+	}
+	if got := calls[0].Input["timeout"]; got != float64(10000) {
+		t.Fatalf("expected timeout to parse as number, got %#v", got)
+	}
+}
+
 func TestParseToolCallsDoesNotAcceptDSMLZeroWidthLowLineLookalikeTagName(t *testing.T) {
 	sep := "\u200d\u2581"
 	text := strings.Join([]string{

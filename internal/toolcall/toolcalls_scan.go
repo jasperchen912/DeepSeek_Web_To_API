@@ -211,7 +211,7 @@ func scanToolMarkupTagAt(text string, start int) (ToolMarkupTag, bool) {
 }
 
 func IsPartialToolMarkupTagPrefix(text string) bool {
-	if text == "" || text[0] != '<' || strings.Contains(text, ">") {
+	if text == "" || text[0] != '<' || strings.Contains(text, ">") || strings.Contains(text, "＞") {
 		return false
 	}
 	lower := strings.ToLower(text)
@@ -338,5 +338,5 @@ func hasToolMarkupBoundary(text string, idx int) bool {
 	case ' ', '\t', '\n', '\r', '>', '/', '|':
 		return true
 	}
-	return strings.HasPrefix(text[idx:], "｜")
+	return strings.HasPrefix(text[idx:], "｜") || strings.HasPrefix(text[idx:], "＞")
 }

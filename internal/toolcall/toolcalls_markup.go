@@ -10,7 +10,7 @@ import (
 var toolCallMarkupKVPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?([a-z0-9_\-.]+)\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?([a-z0-9_\-.]+)>`)
 
 // cdataPattern matches a standalone CDATA section.
-var cdataPattern = regexp.MustCompile(`(?is)^<!\[CDATA\[(.*?)]]>$`)
+var cdataPattern = regexp.MustCompile(`(?is)^<!\[CDATA\[(.*?)]](?:>|＞)$`)
 var markdownCDATAOpenPattern = regexp.MustCompile(`(?is)<\*+!\[CDATA\[`)
 var markdownCDATAStandalonePattern = regexp.MustCompile(`(?is)^<\*+!\[CDATA\[(.*?)\*+>$`)
 
@@ -180,7 +180,7 @@ func SanitizeLooseCDATA(text string) string {
 		contentStart := start + len(openMarker)
 		b.WriteString(text[pos:start])
 
-		properRel := strings.Index(text[contentStart:], closeMarker)
+		properRel, properLen, properFullwidth := findProperCDATAClose(text, contentStart)
 		nestedOpenRel := strings.Index(lower[contentStart:], openMarker)
 		looseRel := findLooseCDATAClose(text, contentStart)
 		markdownRel := findMarkdownCDATAClose(text, contentStart)
@@ -260,8 +260,14 @@ func SanitizeLooseCDATA(text string) string {
 			b.WriteString("]]><")
 			pos = closePos + 1
 		default:
-			b.WriteString(text[start : closePos+len(closeMarker)])
-			pos = closePos + len(closeMarker)
+			if properFullwidth {
+				changed = true
+				b.WriteString(text[start:closePos])
+				b.WriteString(closeMarker)
+			} else {
+				b.WriteString(text[start : closePos+properLen])
+			}
+			pos = closePos + properLen
 		}
 	}
 
@@ -269,6 +275,24 @@ func SanitizeLooseCDATA(text string) string {
 		return text
 	}
 	return b.String()
+}
+
+func findProperCDATAClose(text string, from int) (rel int, markerLen int, fullwidth bool) {
+	if from >= len(text) {
+		return -1, 0, false
+	}
+	const asciiClose = "]]>"
+	const fullwidthClose = "]]＞"
+	asciiRel := strings.Index(text[from:], asciiClose)
+	fullwidthRel := strings.Index(text[from:], fullwidthClose)
+	switch {
+	case asciiRel < 0 && fullwidthRel < 0:
+		return -1, 0, false
+	case asciiRel >= 0 && (fullwidthRel < 0 || asciiRel <= fullwidthRel):
+		return asciiRel, len(asciiClose), false
+	default:
+		return fullwidthRel, len(fullwidthClose), true
+	}
 }
 
 func earliestCandidate(candidate int, others ...int) bool {

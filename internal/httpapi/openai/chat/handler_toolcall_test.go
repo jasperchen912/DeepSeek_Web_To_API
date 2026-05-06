@@ -569,6 +569,43 @@ func TestHandleStreamBuffersPromptVisibleDSMLToolCallsWithoutDeclaredTools(t *te
 	}
 }
 
+func TestHandleStreamBuffersFullwidthGreaterDSMLToolCallsWithoutLeak(t *testing.T) {
+	h := &Handler{}
+	line := func(v string) string {
+		b, _ := json.Marshal(map[string]any{"p": "response/content", "v": v})
+		return "data: " + string(b)
+	}
+	resp := makeSSEHTTPResponse(
+		line("<｜DSML▁tool_calls｜>\n"),
+		line("<｜DSML▁invoke name=\"process\"＞\n"),
+		line("<｜DSML▁parameter name=\"action\"＞<![CDATA[poll]]＞</｜DSML▁parameter＞\n"),
+		line("<｜DSML▁parameter name=\"sessionId\"＞<![CDATA[mild-breeze]]＞</｜DSML▁parameter＞\n"),
+		line("<｜DSML▁parameter name=\"timeout\"＞10000</｜DSML▁parameter＞\n</｜DSML▁invoke＞\n</｜DSML▁tool_calls＞"),
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	finalPrompt := "System tool contract:\n<|DSML|tool_calls><|DSML|invoke name=\"process\"></|DSML|invoke></|DSML|tool_calls>"
+
+	h.handleStream(rec, req, resp, "cid-openclaw-fullwidth-dsml", "deepseek-v4-pro", finalPrompt, 0, false, false, false, nil, nil, nil)
+
+	frames, done := parseSSEDataFrames(t, rec.Body.String())
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", rec.Body.String())
+	}
+	if !streamHasToolCallsDelta(frames) || !strings.Contains(rec.Body.String(), `"name":"process"`) {
+		t.Fatalf("expected process tool_calls delta, body=%s", rec.Body.String())
+	}
+	for _, content := range streamContentDeltas(frames) {
+		if strings.Contains(strings.ToLower(content), "dsml") || strings.Contains(content, "tool_calls") || strings.Contains(content, "mild-breeze") {
+			t.Fatalf("fullwidth DSML markup leaked as content delta %q, body=%s", content, rec.Body.String())
+		}
+	}
+	if streamFinishReason(frames) != "tool_calls" {
+		t.Fatalf("expected finish_reason=tool_calls, body=%s", rec.Body.String())
+	}
+}
+
 func TestHandleStreamEmitsDistinctToolCallIDsAcrossSeparateToolBlocks(t *testing.T) {
 	h := &Handler{}
 	resp := makeSSEHTTPResponse(
