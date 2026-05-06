@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"DeepSeek_Web_To_API/internal/chathistory"
+	"DeepSeek_Web_To_API/internal/currentinputmetrics"
+	openaihistory "DeepSeek_Web_To_API/internal/httpapi/openai/history"
 )
 
 const overviewWindow = time.Minute
@@ -21,17 +23,18 @@ var tokenUsageWindows = []struct {
 }
 
 type overviewMetricsResponse struct {
-	Success       bool                        `json:"success"`
-	CollectedAt   int64                       `json:"collected_at"`
-	WindowSeconds int64                       `json:"window_seconds"`
-	Throughput    overviewThroughput          `json:"throughput"`
-	Tokens        chathistory.TokenUsageStats `json:"tokens"`
-	TokenWindows  map[string]tokenWindowStats `json:"token_windows"`
-	Cost          costBreakdown               `json:"cost"`
-	Host          hostSnapshot                `json:"host"`
-	Cache         overviewCacheStats          `json:"cache"`
-	History       overviewHistoryStats        `json:"history"`
-	Pool          map[string]any              `json:"pool,omitempty"`
+	Success            bool                         `json:"success"`
+	CollectedAt        int64                        `json:"collected_at"`
+	WindowSeconds      int64                        `json:"window_seconds"`
+	Throughput         overviewThroughput           `json:"throughput"`
+	Tokens             chathistory.TokenUsageStats  `json:"tokens"`
+	TokenWindows       map[string]tokenWindowStats  `json:"token_windows"`
+	Cost               costBreakdown                `json:"cost"`
+	Host               hostSnapshot                 `json:"host"`
+	Cache              overviewCacheStats           `json:"cache"`
+	CurrentInputPrefix currentinputmetrics.Snapshot `json:"current_input_prefix"`
+	History            overviewHistoryStats         `json:"history"`
+	Pool               map[string]any               `json:"pool,omitempty"`
 }
 
 type overviewThroughput struct {
@@ -116,12 +119,13 @@ func (h *Handler) getOverviewMetrics(w http.ResponseWriter, _ *http.Request) {
 			TokensPerSecond:  round2(float64(stats.Window.TotalTokens) / windowSeconds),
 			TokensInWindow:   stats.Window.TotalTokens,
 		},
-		Tokens:       stats,
-		TokenWindows: h.tokenWindowStats(),
-		Cost:         buildCostBreakdown(stats, now),
-		Host:         collectHostSnapshot(now),
-		Cache:        h.cacheStats(),
-		History:      h.historyStats(),
+		Tokens:             stats,
+		TokenWindows:       h.tokenWindowStats(),
+		Cost:               buildCostBreakdown(stats, now),
+		Host:               collectHostSnapshot(now),
+		Cache:              h.cacheStats(),
+		CurrentInputPrefix: h.currentInputPrefixStats(),
+		History:            h.historyStats(),
 	}
 	if h.Pool != nil {
 		resp.Pool = h.Pool.Status()
@@ -207,6 +211,11 @@ func (h *Handler) historyStats() overviewHistoryStats {
 		SuccessRate:             outcome.SuccessRate,
 		ExcludedStatusCodes:     outcome.ExcludedStatusCodes,
 	}
+}
+
+func (h *Handler) currentInputPrefixStats() currentinputmetrics.Snapshot {
+	currentinputmetrics.SetActiveStates(openaihistory.ActiveCurrentInputPrefixStates())
+	return currentinputmetrics.GetSnapshot()
 }
 
 func (h *Handler) cacheStats() overviewCacheStats {

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
+	"DeepSeek_Web_To_API/internal/config"
 	openaifmt "DeepSeek_Web_To_API/internal/format/openai"
 	"DeepSeek_Web_To_API/internal/sse"
 	streamengine "DeepSeek_Web_To_API/internal/stream"
@@ -16,13 +18,15 @@ type chatStreamRuntime struct {
 	rc       *http.ResponseController
 	canFlush bool
 
-	completionID  string
-	created       int64
-	model         string
-	finalPrompt   string
-	refFileTokens int
-	toolNames     []string
-	toolsRaw      any
+	completionID     string
+	created          int64
+	model            string
+	finalPrompt      string
+	requestStartedAt time.Time
+	traceID          string
+	refFileTokens    int
+	toolNames        []string
+	toolsRaw         any
 
 	thinkingEnabled       bool
 	exposeReasoning       bool
@@ -53,6 +57,11 @@ type chatStreamRuntime struct {
 	finalErrorStatus  int
 	finalErrorMessage string
 	finalErrorCode    string
+}
+
+type chatStreamTiming struct {
+	requestStartedAt time.Time
+	traceID          string
 }
 
 type chatDeltaBatch struct {
@@ -98,7 +107,14 @@ func newChatStreamRuntime(
 	requireToolCall bool,
 	bufferToolContent bool,
 	emitEarlyToolDeltas bool,
+	timing ...chatStreamTiming,
 ) *chatStreamRuntime {
+	var requestStartedAt time.Time
+	traceID := ""
+	if len(timing) > 0 {
+		requestStartedAt = timing[0].requestStartedAt
+		traceID = timing[0].traceID
+	}
 	return &chatStreamRuntime{
 		w:                     w,
 		rc:                    rc,
@@ -107,6 +123,8 @@ func newChatStreamRuntime(
 		created:               created,
 		model:                 model,
 		finalPrompt:           finalPrompt,
+		requestStartedAt:      requestStartedAt,
+		traceID:               traceID,
 		toolNames:             toolNames,
 		toolsRaw:              toolsRaw,
 		thinkingEnabled:       thinkingEnabled,
@@ -139,11 +157,23 @@ func (s *chatStreamRuntime) sendChunk(v any) {
 	}
 }
 
+func firstDeltaField(delta map[string]any) string {
+	for _, key := range []string{"reasoning_content", "content", "tool_calls", "role"} {
+		if _, ok := delta[key]; ok {
+			return key
+		}
+	}
+	return "unknown"
+}
+
 func (s *chatStreamRuntime) sendDelta(delta map[string]any) {
 	if len(delta) == 0 {
 		return
 	}
 	if !s.firstChunkSent {
+		if !s.requestStartedAt.IsZero() {
+			config.Logger.Info("[openai_chat_timing] first_stream_delta", "trace_id", s.traceID, "model", s.model, "completion_id", s.completionID, "first_delta_ms", durationMillis(time.Since(s.requestStartedAt)), "field", firstDeltaField(delta))
+		}
 		delta["role"] = "assistant"
 		s.firstChunkSent = true
 	}

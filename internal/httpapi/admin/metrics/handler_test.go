@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"DeepSeek_Web_To_API/internal/chathistory"
+	"DeepSeek_Web_To_API/internal/currentinputmetrics"
 )
 
 type cacheStatsStub struct {
@@ -20,6 +21,10 @@ func (s cacheStatsStub) Stats() map[string]any {
 }
 
 func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
+	currentinputmetrics.ResetForTest()
+	t.Cleanup(currentinputmetrics.ResetForTest)
+	currentinputmetrics.Record(currentinputmetrics.Sample{Applied: true, PrefixReused: false, CheckpointRefresh: true, PrefixHash: "hash-a", PrefixChars: 1000, TailChars: 40, TailEntries: 1, DurationMs: 2000})
+	currentinputmetrics.Record(currentinputmetrics.Sample{Applied: true, PrefixReused: true, CheckpointRefresh: false, PrefixHash: "hash-a", PrefixChars: 1000, TailChars: 120, TailEntries: 3, DurationMs: 120})
 	store := chathistory.New(filepath.Join(t.TempDir(), "chat_history.json"))
 	entry, err := store.Start(chathistory.StartParams{
 		Model:     "deepseek-v4-pro",
@@ -86,9 +91,10 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 			TotalUSD      float64 `json:"total_usd"`
 			PricingSource string  `json:"pricing_source"`
 		} `json:"cost"`
-		Cache   overviewCacheStats   `json:"cache"`
-		History overviewHistoryStats `json:"history"`
-		Host    hostSnapshot         `json:"host"`
+		Cache              overviewCacheStats           `json:"cache"`
+		CurrentInputPrefix currentinputmetrics.Snapshot `json:"current_input_prefix"`
+		History            overviewHistoryStats         `json:"history"`
+		Host               hostSnapshot                 `json:"host"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response failed: %v", err)
@@ -107,6 +113,9 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 	}
 	if body.Cache.HitRate != 60 || body.Cache.MissRate != 40 || body.Cache.CacheableHitRate != 75 || body.Cache.CacheableMissRate != 25 || body.Cache.CacheableMisses != 1 || body.Cache.UncacheableMisses != 1 || body.Cache.MemoryHits != 2 || body.Cache.DiskHits != 1 {
 		t.Fatalf("unexpected cache metrics: %#v", body.Cache)
+	}
+	if body.CurrentInputPrefix.Applied != 2 || body.CurrentInputPrefix.Reused != 1 || body.CurrentInputPrefix.Refreshes != 1 || body.CurrentInputPrefix.ReuseRate != 50 || body.CurrentInputPrefix.CurrentInputFileMsReusedAvg != 120 || body.CurrentInputPrefix.CurrentInputFileMsRefreshAvg != 2000 {
+		t.Fatalf("unexpected current input prefix metrics: %#v", body.CurrentInputPrefix)
 	}
 	if body.History.Total != 1 || body.History.Limit != chathistory.DefaultLimit || body.History.Success != 1 || body.History.SuccessRate != 100 {
 		t.Fatalf("unexpected history metrics: %#v", body.History)

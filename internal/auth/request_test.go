@@ -202,6 +202,83 @@ func TestDetermineWithSessionHeaderScopeOverridesBodyFingerprint(t *testing.T) {
 	}
 }
 
+func TestDetermineWithSessionOpenClawSessionHeaderOverridesBodyFingerprint(t *testing.T) {
+	t.Setenv("DEEPSEEK_WEB_TO_API_CONFIG_JSON", `{
+		"keys":["managed-key"],
+		"accounts":[
+			{"email":"acc1@example.com","password":"pwd","token":"token-1"},
+			{"email":"acc2@example.com","password":"pwd","token":"token-2"}
+		],
+		"runtime":{"account_max_inflight":8}
+	}`)
+	store := config.LoadStore()
+	pool := account.NewPool(store)
+	resolver := NewResolver(store, pool, func(_ context.Context, acc config.Account) (string, error) {
+		return acc.Token, nil
+	})
+
+	req1, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req1.Header.Set("x-api-key", "managed-key")
+	req1.Header.Set(OpenClawSessionIDHeader, "agent:main:telegram:group:-1003831997039:topic:1682")
+	a1, err := resolver.DetermineWithSession(req1, []byte(`{"messages":[{"role":"user","content":"first body"}]}`))
+	if err != nil {
+		t.Fatalf("first determine failed: %v", err)
+	}
+	defer resolver.Release(a1)
+
+	req2, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req2.Header.Set("x-api-key", "managed-key")
+	req2.Header.Set(OpenClawSessionIDHeader, "agent:main:telegram:group:-1003831997039:topic:1682")
+	a2, err := resolver.DetermineWithSession(req2, []byte(`{"messages":[{"role":"user","content":"different body"}]}`))
+	if err != nil {
+		t.Fatalf("second determine failed: %v", err)
+	}
+	defer resolver.Release(a2)
+
+	if a2.AccountID != a1.AccountID {
+		t.Fatalf("expected OpenClaw header-scoped account %q, got %q", a1.AccountID, a2.AccountID)
+	}
+}
+
+func TestDetermineWithSessionOpenClawMetadataSessionOverridesBodyFingerprint(t *testing.T) {
+	t.Setenv("DEEPSEEK_WEB_TO_API_CONFIG_JSON", `{
+		"keys":["managed-key"],
+		"accounts":[
+			{"email":"acc1@example.com","password":"pwd","token":"token-1"},
+			{"email":"acc2@example.com","password":"pwd","token":"token-2"}
+		],
+		"runtime":{"account_max_inflight":8}
+	}`)
+	store := config.LoadStore()
+	pool := account.NewPool(store)
+	resolver := NewResolver(store, pool, func(_ context.Context, acc config.Account) (string, error) {
+		return acc.Token, nil
+	})
+
+	body1 := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"first body"}],"metadata":{"openclaw_session_id":"agent:main:telegram:group:-1003831997039:topic:1682"}}`)
+	body2 := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"different body"}],"metadata":{"openclaw_session_id":"agent:main:telegram:group:-1003831997039:topic:1682","openclaw_turn_id":"different-turn"}}`)
+
+	req1, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req1.Header.Set("x-api-key", "managed-key")
+	a1, err := resolver.DetermineWithSession(req1, body1)
+	if err != nil {
+		t.Fatalf("first determine failed: %v", err)
+	}
+	defer resolver.Release(a1)
+
+	req2, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req2.Header.Set("x-api-key", "managed-key")
+	a2, err := resolver.DetermineWithSession(req2, body2)
+	if err != nil {
+		t.Fatalf("second determine failed: %v", err)
+	}
+	defer resolver.Release(a2)
+
+	if a2.AccountID != a1.AccountID {
+		t.Fatalf("expected OpenClaw metadata-scoped account %q, got %q", a1.AccountID, a2.AccountID)
+	}
+}
+
 func TestDetermineWithSessionDifferentHeaderScopesDistributeAccounts(t *testing.T) {
 	t.Setenv("DEEPSEEK_WEB_TO_API_CONFIG_JSON", `{
 		"keys":["managed-key"],

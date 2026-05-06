@@ -316,6 +316,47 @@ func TestApplyCurrentInputFileUploadsFirstTurnAsPlainTranscript(t *testing.T) {
 	}
 }
 
+func TestApplyCurrentInputFileTriggersOnLargeAccumulatedTranscript(t *testing.T) {
+	ds := &inlineUploadDSStub{}
+	h := &openAITestSurface{
+		Store: mockOpenAIConfig{
+			wideInput:           true,
+			currentInputEnabled: true,
+			currentInputMin:     80,
+			thinkingInjection:   boolPtr(true),
+		},
+		DS: ds,
+	}
+	req := map[string]any{
+		"model": "deepseek-v4-pro",
+		"messages": []any{
+			map[string]any{"role": "system", "content": strings.Repeat("large prior context ", 8)},
+			map[string]any{"role": "user", "content": "short latest"},
+		},
+	}
+	stdReq, err := promptcompat.NormalizeOpenAIChatRequest(h.Store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+
+	out, err := h.applyCurrentInputFile(context.Background(), &auth.RequestAuth{DeepSeekToken: "token"}, stdReq)
+	if err != nil {
+		t.Fatalf("apply current input file failed: %v", err)
+	}
+	if !out.CurrentInputFileApplied {
+		t.Fatal("expected current input file to apply for large accumulated transcript")
+	}
+	if len(ds.uploadCalls) != 1 {
+		t.Fatalf("expected one current input upload, got %d", len(ds.uploadCalls))
+	}
+	if strings.Contains(out.FinalPrompt, "large prior context") || strings.Contains(out.FinalPrompt, "short latest") {
+		t.Fatalf("expected large transcript to be removed from live prompt, got %q", out.FinalPrompt)
+	}
+	if uploaded := string(ds.uploadCalls[0].Data); !strings.Contains(uploaded, "large prior context") || !strings.Contains(uploaded, "short latest") {
+		t.Fatalf("expected upload to contain full transcript, got %q", uploaded)
+	}
+}
+
 func TestApplyCurrentInputFilePreservesFullContextPromptForTokenCounting(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &openAITestSurface{
@@ -759,4 +800,90 @@ func defaultToolChoicePolicy() promptcompat.ToolChoicePolicy {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func TestApplyCurrentInputFileReusesStablePrefixForRollingTail(t *testing.T) {
+	ds := &inlineUploadDSStub{}
+	h := &openAITestSurface{
+		Store: mockOpenAIConfig{
+			wideInput:           true,
+			currentInputEnabled: true,
+			currentInputMin:     80,
+		},
+		DS: ds,
+	}
+	a := &auth.RequestAuth{
+		DeepSeekToken: "token",
+		CallerID:      "caller:p3c-test",
+		AccountID:     "acct:p3c-test",
+		SessionKey:    "session:p3c-test",
+	}
+	stablePrefix := strings.Repeat("stable prefix context ", 4200)
+	firstMessages := []any{
+		map[string]any{"role": "system", "content": stablePrefix},
+		map[string]any{"role": "user", "content": "first latest request"},
+	}
+	secondMessages := []any{
+		map[string]any{"role": "system", "content": stablePrefix},
+		map[string]any{"role": "user", "content": "first latest request"},
+		map[string]any{"role": "assistant", "content": "first answer"},
+		map[string]any{"role": "user", "content": "second latest request"},
+	}
+
+	firstReq := map[string]any{"model": "deepseek-v4-pro-nothinking", "messages": firstMessages}
+	firstStdReq, err := promptcompat.NormalizeOpenAIChatRequest(h.Store, firstReq, "")
+	if err != nil {
+		t.Fatalf("normalize first request failed: %v", err)
+	}
+	firstOut, err := h.applyCurrentInputFile(context.Background(), a, firstStdReq)
+	if err != nil {
+		t.Fatalf("apply first current input file failed: %v", err)
+	}
+	if !firstOut.CurrentInputFileApplied || !firstOut.CurrentInputCheckpointRefresh || firstOut.CurrentInputPrefixReused {
+		t.Fatalf("expected first request to create a prefix checkpoint, got applied=%v refresh=%v reused=%v", firstOut.CurrentInputFileApplied, firstOut.CurrentInputCheckpointRefresh, firstOut.CurrentInputPrefixReused)
+	}
+	if firstOut.CurrentInputPrefixHash == "" || firstOut.CurrentInputPrefixChars == 0 || firstOut.CurrentInputTailChars == 0 {
+		t.Fatalf("expected first prefix metrics, got hash=%q prefix=%d tail=%d", firstOut.CurrentInputPrefixHash, firstOut.CurrentInputPrefixChars, firstOut.CurrentInputTailChars)
+	}
+	if len(ds.uploadCalls) != 1 {
+		t.Fatalf("expected one prefix upload on first request, got %d", len(ds.uploadCalls))
+	}
+	firstUpload := string(ds.uploadCalls[0].Data)
+	if !strings.Contains(firstUpload, "stable prefix context") {
+		t.Fatalf("expected upload to contain stable prefix, got %q", firstUpload[:min(len(firstUpload), 200)])
+	}
+	if strings.Contains(firstUpload, "first latest request") {
+		t.Fatalf("expected first latest request to stay in live tail, not prefix upload")
+	}
+	if !strings.Contains(firstOut.FinalPrompt, "first latest request") || strings.Contains(firstOut.FinalPrompt, "stable prefix context") {
+		t.Fatalf("expected live prompt to contain tail but not stable prefix, got %q", firstOut.FinalPrompt[:min(len(firstOut.FinalPrompt), 500)])
+	}
+
+	secondReq := map[string]any{"model": "deepseek-v4-pro-nothinking", "messages": secondMessages}
+	secondStdReq, err := promptcompat.NormalizeOpenAIChatRequest(h.Store, secondReq, "")
+	if err != nil {
+		t.Fatalf("normalize second request failed: %v", err)
+	}
+	secondOut, err := h.applyCurrentInputFile(context.Background(), a, secondStdReq)
+	if err != nil {
+		t.Fatalf("apply second current input file failed: %v", err)
+	}
+	if !secondOut.CurrentInputPrefixReused || secondOut.CurrentInputCheckpointRefresh {
+		t.Fatalf("expected second request to reuse prefix without refresh, got reused=%v refresh=%v", secondOut.CurrentInputPrefixReused, secondOut.CurrentInputCheckpointRefresh)
+	}
+	if secondOut.CurrentInputPrefixHash != firstOut.CurrentInputPrefixHash {
+		t.Fatalf("expected stable prefix hash reuse, first=%q second=%q", firstOut.CurrentInputPrefixHash, secondOut.CurrentInputPrefixHash)
+	}
+	if len(ds.uploadCalls) != 1 {
+		t.Fatalf("expected no second upload when prefix is reused, got %d uploads", len(ds.uploadCalls))
+	}
+	if len(secondOut.RefFileIDs) != 1 || secondOut.RefFileIDs[0] != "file-inline-1" {
+		t.Fatalf("expected reused file id in ref_file_ids, got %#v", secondOut.RefFileIDs)
+	}
+	if !strings.Contains(secondOut.FinalPrompt, "first latest request") || !strings.Contains(secondOut.FinalPrompt, "second latest request") {
+		t.Fatalf("expected rolling tail in live prompt, got %q", secondOut.FinalPrompt)
+	}
+	if strings.Contains(secondOut.FinalPrompt, "stable prefix context") {
+		t.Fatalf("expected stable prefix to remain in attached file only")
+	}
 }

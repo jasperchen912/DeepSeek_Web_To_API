@@ -13,6 +13,7 @@ import (
 
 	"DeepSeek_Web_To_API/internal/auth"
 	"DeepSeek_Web_To_API/internal/config"
+	"DeepSeek_Web_To_API/internal/currentinputmetrics"
 	dsprotocol "DeepSeek_Web_To_API/internal/deepseek/protocol"
 	openaifmt "DeepSeek_Web_To_API/internal/format/openai"
 	"DeepSeek_Web_To_API/internal/httpapi/historycapture"
@@ -122,7 +123,9 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stdReq = shared.ApplyThinkingInjection(h.Store, stdReq)
+	currentInputFileStartedAt := time.Now()
 	stdReq, err = h.applyCurrentInputFile(r.Context(), a, stdReq)
+	currentInputFileDuration := time.Since(currentInputFileStartedAt)
 	if err != nil {
 		status, message := mapCurrentInputFileError(err)
 		if historySession != nil {
@@ -131,6 +134,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, status, message)
 		return
 	}
+	recordCurrentInputMetrics(stdReq, currentInputFileDuration)
 
 	sessionID, err := h.DS.CreateSession(r.Context(), a, 3)
 	if err != nil {
@@ -159,6 +163,26 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.handleResponsesNonStreamWithRetry(w, r.Context(), a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, refFileTokens, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolsRaw, stdReq.ToolChoice, traceID, historySession)
+}
+
+func recordCurrentInputMetrics(stdReq promptcompat.StandardRequest, duration time.Duration) {
+	currentinputmetrics.Record(currentinputmetrics.Sample{
+		Applied:           stdReq.CurrentInputFileApplied,
+		PrefixReused:      stdReq.CurrentInputPrefixReused,
+		CheckpointRefresh: stdReq.CurrentInputCheckpointRefresh,
+		PrefixHash:        stdReq.CurrentInputPrefixHash,
+		PrefixChars:       stdReq.CurrentInputPrefixChars,
+		TailChars:         stdReq.CurrentInputTailChars,
+		TailEntries:       stdReq.CurrentInputTailEntries,
+		DurationMs:        responseDurationMillis(duration),
+	})
+}
+
+func responseDurationMillis(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return d.Milliseconds()
 }
 
 func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, refFileTokens int, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, toolChoice promptcompat.ToolChoicePolicy, traceID string) {

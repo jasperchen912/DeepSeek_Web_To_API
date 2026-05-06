@@ -26,34 +26,38 @@ func (s Service) ApplyCurrentInputFile(ctx context.Context, a *auth.RequestAuth,
 	}
 	threshold := s.Store.CurrentInputFileMinChars()
 
-	index, text := latestUserInputForFile(stdReq.Messages)
+	index, latestUserText := latestUserInputForFile(stdReq.Messages)
 	if index < 0 {
-		return stdReq, nil
-	}
-	if len([]rune(text)) < threshold {
 		return stdReq, nil
 	}
 	fileText := promptcompat.BuildOpenAICurrentInputContextTranscript(stdReq.Messages)
 	if strings.TrimSpace(fileText) == "" {
 		return stdReq, errors.New("current user input file produced empty transcript")
 	}
+	// Trigger on either a long latest user message or a large accumulated
+	// prompt. Real OpenClaw turns often have a short latest user request plus
+	// a very large prior context; keeping that history inline can make
+	// DeepSeek Web return an empty stream for V4 Pro. Uploading the full
+	// transcript as the current-input file keeps the live prompt small while
+	// preserving context.
+	largeAccumulatedPrompt := len(stdReq.Messages) > 1 && len([]rune(stdReq.FinalPrompt)) >= threshold
+	if len([]rune(latestUserText)) < threshold && !largeAccumulatedPrompt {
+		return stdReq, nil
+	}
 	modelType := "default"
 	if resolvedType, ok := config.GetModelType(stdReq.ResolvedModel); ok {
 		modelType = resolvedType
 	}
-	result, err := s.DS.UploadFile(ctx, a, dsclient.UploadFileRequest{
-		Filename:    currentInputFilename,
-		ContentType: currentInputContentType,
-		Purpose:     currentInputPurpose,
-		ModelType:   modelType,
-		Data:        []byte(fileText),
-	}, 3)
-	if err != nil {
-		return stdReq, fmt.Errorf("upload current user input file: %w", err)
+	if out, ok, err := s.applyCurrentInputStablePrefix(ctx, a, stdReq, fileText, modelType); err != nil || ok {
+		return out, err
 	}
-	fileID := strings.TrimSpace(result.ID)
-	if fileID == "" {
-		return stdReq, errors.New("upload current user input file returned empty file id")
+	return s.applyCurrentInputFullFile(ctx, a, stdReq, fileText, modelType)
+}
+
+func (s Service) applyCurrentInputFullFile(ctx context.Context, a *auth.RequestAuth, stdReq promptcompat.StandardRequest, fileText, modelType string) (promptcompat.StandardRequest, error) {
+	fileID, err := s.uploadCurrentInputFile(ctx, a, fileText, modelType)
+	if err != nil {
+		return stdReq, err
 	}
 
 	messages := []any{
@@ -66,6 +70,9 @@ func (s Service) ApplyCurrentInputFile(ctx context.Context, a *auth.RequestAuth,
 	stdReq.Messages = messages
 	stdReq.HistoryText = fileText
 	stdReq.CurrentInputFileApplied = true
+	stdReq.CurrentInputPrefixHash = currentInputTextHash(fileText)
+	stdReq.CurrentInputPrefixChars = len(fileText)
+	stdReq.CurrentInputCheckpointRefresh = true
 	stdReq.RefFileIDs = prependUniqueRefFileID(stdReq.RefFileIDs, fileID)
 	stdReq.FinalPrompt, stdReq.ToolNames = promptcompat.BuildOpenAIPrompt(messages, stdReq.ToolsRaw, "", stdReq.ToolChoice, stdReq.Thinking)
 	// Token accounting must reflect the actual downstream context:
@@ -73,6 +80,24 @@ func (s Service) ApplyCurrentInputFile(ctx context.Context, a *auth.RequestAuth,
 	stdReq.RefFileTokens += util.CountPromptTokens(fileText, stdReq.ResponseModel)
 	stdReq.PromptTokenText = fileText + "\n" + stdReq.FinalPrompt
 	return stdReq, nil
+}
+
+func (s Service) uploadCurrentInputFile(ctx context.Context, a *auth.RequestAuth, fileText, modelType string) (string, error) {
+	result, err := s.DS.UploadFile(ctx, a, dsclient.UploadFileRequest{
+		Filename:    currentInputFilename,
+		ContentType: currentInputContentType,
+		Purpose:     currentInputPurpose,
+		ModelType:   modelType,
+		Data:        []byte(fileText),
+	}, 3)
+	if err != nil {
+		return "", fmt.Errorf("upload current user input file: %w", err)
+	}
+	fileID := strings.TrimSpace(result.ID)
+	if fileID == "" {
+		return "", errors.New("upload current user input file returned empty file id")
+	}
+	return fileID, nil
 }
 
 func latestUserInputForFile(messages []any) (int, string) {

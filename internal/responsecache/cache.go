@@ -175,24 +175,57 @@ func (c *Cache) Wrap(resolver CallerResolver, next http.Handler) http.Handler {
 			return
 		}
 
+		path := canonicalRequestPath(r.URL.Path)
+		if requestBodyStreamEnabled(rawBody) {
+			c.recordUncacheable("stream_request")
+			config.Logger.Info("[response_cache] uncacheable", "path", path, "owner", owner, "reason", "stream_request", "request_body_bytes", len(rawBody))
+			r.Body = io.NopCloser(bytes.NewReader(rawBody))
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		key := RequestKey(r, owner, rawBody)
 		if entry, source, ok := c.Get(key); ok {
+			config.Logger.Info("[response_cache] hit", "path", path, "source", source, "key", key, "owner", owner, "status", entry.Status, "request_body_bytes", len(rawBody), "response_body_bytes", len(entry.Body))
 			if c.onHit != nil {
 				c.onHit(r, cloneEntry(entry), source)
 			}
 			writeCachedResponse(w, entry, source)
 			return
 		}
+		config.Logger.Info("[response_cache] miss", "path", path, "key", key, "owner", owner, "request_body_bytes", len(rawBody))
 
 		r.Body = io.NopCloser(bytes.NewReader(rawBody))
 		cw := newCaptureResponseWriter(w, c.maxBody)
 		next.ServeHTTP(cw, r)
 		if entry, ok, reason := cw.cacheEntry(); ok {
 			c.Set(key, entry)
+			config.Logger.Info("[response_cache] store", "path", path, "key", key, "owner", owner, "status", entry.Status, "response_body_bytes", len(entry.Body))
 		} else {
 			c.recordUncacheable(reason)
+			config.Logger.Info("[response_cache] uncacheable", "path", path, "key", key, "owner", owner, "reason", reason)
 		}
 	})
+}
+
+func requestBodyStreamEnabled(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var value struct {
+		Stream any `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return false
+	}
+	switch v := value.Stream.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
 }
 
 func CacheableRequest(r *http.Request) bool {
@@ -953,7 +986,7 @@ func varyRequestHeaders() []varyRequestHeader {
 		{Name: "Anthropic-Beta"},
 		{Name: "Anthropic-Version"},
 		{Name: "Content-Type"},
-		{Name: "X-DeepSeek-Web-To-API-Session-Affinity-Key", Legacy: []string{"X-Ds2-Session-Affinity-Key"}},
+		{Name: "X-DeepSeek-Web-To-API-Session-Affinity-Key", Legacy: []string{"X-Ds2-Session-Affinity-Key", "X-OpenClaw-Session-Id", "X-Client-Request-Id", "X-Session-Affinity", "Session-Id"}},
 		{Name: "X-DeepSeek-Web-To-API-Source", Legacy: []string{"X-Ds2-Source"}},
 		{Name: "X-DeepSeek-Web-To-API-Target-Account", Legacy: []string{"X-Ds2-Target-Account"}},
 	}

@@ -3,25 +3,31 @@ package promptcompat
 import "DeepSeek_Web_To_API/internal/config"
 
 type StandardRequest struct {
-	Surface                 string
-	RequestedModel          string
-	ResolvedModel           string
-	ResponseModel           string
-	Messages                []any
-	HistoryText             string
-	PromptTokenText         string
-	CurrentInputFileApplied bool
-	ToolsRaw                any
-	FinalPrompt             string
-	ToolNames               []string
-	ToolChoice              ToolChoicePolicy
-	Stream                  bool
-	Thinking                bool
-	ExposeReasoning         bool
-	Search                  bool
-	RefFileIDs              []string
-	RefFileTokens           int
-	PassThrough             map[string]any
+	Surface                       string
+	RequestedModel                string
+	ResolvedModel                 string
+	ResponseModel                 string
+	Messages                      []any
+	HistoryText                   string
+	PromptTokenText               string
+	CurrentInputFileApplied       bool
+	CurrentInputPrefixHash        string
+	CurrentInputPrefixReused      bool
+	CurrentInputPrefixChars       int
+	CurrentInputTailChars         int
+	CurrentInputTailEntries       int
+	CurrentInputCheckpointRefresh bool
+	ToolsRaw                      any
+	FinalPrompt                   string
+	ToolNames                     []string
+	ToolChoice                    ToolChoicePolicy
+	Stream                        bool
+	Thinking                      bool
+	ExposeReasoning               bool
+	Search                        bool
+	RefFileIDs                    []string
+	RefFileTokens                 int
+	PassThrough                   map[string]any
 }
 
 type ToolChoiceMode string

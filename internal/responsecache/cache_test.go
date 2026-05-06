@@ -162,6 +162,36 @@ func TestRequestBypassSkipsCache(t *testing.T) {
 	}
 }
 
+func TestStreamRequestSkipsCache(t *testing.T) {
+	t.Parallel()
+
+	cache := New(Options{Dir: t.TempDir(), MemoryTTL: time.Minute, DiskTTL: time.Hour})
+	var calls int32
+	handler := cache.Wrap(stubResolver{caller: "caller-a"}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: {\"call\":%d}\n\ndata: [DONE]\n\n", call)
+	}))
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true}`))
+		req.Header.Set("Authorization", "Bearer key-a")
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Header().Get("X-DeepSeek-Web-To-API-Cache") != "" {
+			t.Fatalf("unexpected cache hit on stream request")
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("expected stream requests to call handler twice, got %d", got)
+	}
+	stats := cache.Stats()
+	if got := stats["stores"]; got != int64(0) {
+		t.Fatalf("expected zero stream cache stores, got %v", got)
+	}
+}
+
 func TestOversizedBodySkipsCacheWithoutConsumingBody(t *testing.T) {
 	t.Parallel()
 

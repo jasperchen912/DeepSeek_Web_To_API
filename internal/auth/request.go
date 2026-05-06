@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -21,10 +22,14 @@ type ctxKey string
 const authCtxKey ctxKey = "auth_context"
 
 const (
-	TargetAccountHeader         = "X-DeepSeek-Web-To-API-Target-Account"
-	LegacyTargetAccountHeader   = "X-Ds2-Target-Account"
-	SessionAffinityHeader       = "X-DeepSeek-Web-To-API-Session-Affinity-Key"
-	LegacySessionAffinityHeader = "X-Ds2-Session-Affinity-Key"
+	TargetAccountHeader           = "X-DeepSeek-Web-To-API-Target-Account"
+	LegacyTargetAccountHeader     = "X-Ds2-Target-Account"
+	SessionAffinityHeader         = "X-DeepSeek-Web-To-API-Session-Affinity-Key"
+	LegacySessionAffinityHeader   = "X-Ds2-Session-Affinity-Key"
+	OpenClawSessionIDHeader       = "X-OpenClaw-Session-Id"
+	OpenClawClientRequestHeader   = "X-Client-Request-Id"
+	OpenClawSessionAffinityHeader = "X-Session-Affinity"
+	OpenClawLegacySessionHeader   = "Session-Id"
 )
 
 var (
@@ -154,9 +159,19 @@ func (r *Resolver) DetermineWithSession(req *http.Request, body []byte) (*Reques
 
 func sessionKeyFromRequest(req *http.Request, callerHash [32]byte, body []byte) string {
 	if req != nil {
-		if scope := requestHeader(req, SessionAffinityHeader, LegacySessionAffinityHeader); scope != "" {
+		if scope := requestHeader(req,
+			SessionAffinityHeader,
+			LegacySessionAffinityHeader,
+			OpenClawSessionIDHeader,
+			OpenClawClientRequestHeader,
+			OpenClawSessionAffinityHeader,
+			OpenClawLegacySessionHeader,
+		); scope != "" {
 			return account.ScopedSessionKey(callerHash, scope)
 		}
+	}
+	if scope := openClawMetadataSessionScope(body); scope != "" {
+		return account.ScopedSessionKey(callerHash, scope)
 	}
 	bodyKey := account.SessionKey(callerHash, body)
 	if bodyKey == "" {
@@ -168,6 +183,26 @@ func sessionKeyFromRequest(req *http.Request, callerHash [32]byte, body []byte) 
 		}
 	}
 	return bodyKey
+}
+
+func openClawMetadataSessionScope(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var value map[string]any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return ""
+	}
+	metadata, _ := value["metadata"].(map[string]any)
+	if len(metadata) == 0 {
+		return ""
+	}
+	for _, key := range []string{"openclaw_session_id", "openclawSessionId", "session_id", "sessionId"} {
+		if scope, _ := metadata[key].(string); strings.TrimSpace(scope) != "" {
+			return strings.TrimSpace(scope)
+		}
+	}
+	return ""
 }
 
 func requestHeader(req *http.Request, primary string, legacy ...string) string {

@@ -153,8 +153,8 @@ func shouldRetryChatNonStream(result chatNonStreamResult, attempts int) bool {
 		strings.TrimSpace(result.text) == ""
 }
 
-func (h *Handler) handleStreamWithRetry(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, completionID, model, finalPrompt string, refFileTokens int, thinkingEnabled, exposeReasoning, searchEnabled bool, toolNames []string, toolsRaw any, requireToolCall bool, historySession *chatHistorySession, activeSessionID *string) {
-	streamRuntime, initialType, ok := h.prepareChatStreamRuntime(w, resp, completionID, model, finalPrompt, refFileTokens, thinkingEnabled, exposeReasoning, searchEnabled, toolNames, toolsRaw, requireToolCall, historySession)
+func (h *Handler) handleStreamWithRetry(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, completionID, model, finalPrompt string, refFileTokens int, thinkingEnabled, exposeReasoning, searchEnabled bool, toolNames []string, toolsRaw any, requireToolCall bool, historySession *chatHistorySession, activeSessionID *string, requestStartedAt time.Time, traceID string) {
+	streamRuntime, initialType, ok := h.prepareChatStreamRuntime(w, resp, completionID, model, finalPrompt, refFileTokens, thinkingEnabled, exposeReasoning, searchEnabled, toolNames, toolsRaw, requireToolCall, historySession, requestStartedAt, traceID)
 	if !ok {
 		return
 	}
@@ -207,7 +207,7 @@ func (h *Handler) prepareChatEmptyOutputRetry(ctx context.Context, a *auth.Reque
 	return shared.PrepareEmptyOutputRetry(ctx, h.Auth, h.DS, a, basePayload, retryPayload, originalPow, "chat.completions", stream, retryAttempt, bindAuth, activeSessionID)
 }
 
-func (h *Handler) prepareChatStreamRuntime(w http.ResponseWriter, resp *http.Response, completionID, model, finalPrompt string, refFileTokens int, thinkingEnabled, exposeReasoning, searchEnabled bool, toolNames []string, toolsRaw any, requireToolCall bool, historySession *chatHistorySession) (*chatStreamRuntime, string, bool) {
+func (h *Handler) prepareChatStreamRuntime(w http.ResponseWriter, resp *http.Response, completionID, model, finalPrompt string, refFileTokens int, thinkingEnabled, exposeReasoning, searchEnabled bool, toolNames []string, toolsRaw any, requireToolCall bool, historySession *chatHistorySession, requestStartedAt time.Time, traceID string) (*chatStreamRuntime, string, bool) {
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(resp.Body)
@@ -235,6 +235,7 @@ func (h *Handler) prepareChatStreamRuntime(w http.ResponseWriter, resp *http.Res
 		thinkingEnabled, exposeReasoning, searchEnabled, h.compatStripReferenceMarkers(), toolNames, toolsRaw,
 		requireToolCall,
 		shared.ShouldBufferStreamToolContent(finalPrompt, toolNames), h.toolcallFeatureMatchEnabled() && h.toolcallEarlyEmitHighConfidence(),
+		chatStreamTiming{requestStartedAt: requestStartedAt, traceID: traceID},
 	)
 	streamRuntime.refFileTokens = refFileTokens
 	return streamRuntime, initialType, true

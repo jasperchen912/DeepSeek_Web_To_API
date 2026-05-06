@@ -327,6 +327,18 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
     const cacheableHitRate = Number(cache.cacheable_hit_rate) || 0
     const cacheableMissRate = Number(cache.cacheable_miss_rate) || (cacheableLookups > 0 ? (cacheableMisses * 100) / cacheableLookups : 0)
     const uncacheableMissRate = cacheMisses > 0 ? (uncacheableMisses * 100) / cacheMisses : 0
+    const currentInputPrefix = metrics.current_input_prefix || {}
+    const prefixApplied = Number(currentInputPrefix.applied) || 0
+    const prefixReused = Number(currentInputPrefix.reused) || 0
+    const prefixRefreshes = Number(currentInputPrefix.refreshes) || 0
+    const prefixFallbackFullUploads = Number(currentInputPrefix.fallback_full_uploads) || 0
+    const prefixReuseRate = Number(currentInputPrefix.reuse_rate) || 0
+    const prefixActiveStates = Number(currentInputPrefix.active_states) || 0
+    const prefixTailAvg = Number(currentInputPrefix.tail_chars_avg) || 0
+    const prefixTailP95 = Number(currentInputPrefix.tail_chars_p95) || 0
+    const prefixFileMsAvg = Number(currentInputPrefix.current_input_file_ms_avg) || 0
+    const prefixFileMsReusedAvg = Number(currentInputPrefix.current_input_file_ms_reused_avg) || 0
+    const prefixFileMsRefreshAvg = Number(currentInputPrefix.current_input_file_ms_refresh_avg) || 0
     const historyMetrics = metrics.history || {}
     const metricsHistoryTotal = optionalNumber(historyMetrics.total)
     const metaHistoryTotal = optionalNumber(historyMeta.total)
@@ -377,6 +389,13 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
                 <MetricCard icon={Gauge} label="负载状态" value={formatRate(hostLoad.load1)} hint={`5m ${formatRate(hostLoad.load5)} / 15m ${formatRate(hostLoad.load15)} · ${loadStatusLabel(hostLoad.status)}`} />
                 <MetricCard icon={ArrowUp} label="带宽上行" value={formatBandwidth(hostBandwidth.tx_bytes_per_sec)} hint={`累计 ${formatBytes(hostBandwidth.tx_total_bytes)}`} tone="cyan" />
                 <MetricCard icon={ArrowDown} label="带宽下行" value={formatBandwidth(hostBandwidth.rx_bytes_per_sec)} hint={`累计 ${formatBytes(hostBandwidth.rx_total_bytes)}`} tone="emerald" />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                <MetricCard icon={Sparkles} label="Prefix 复用率" value={formatPercent(prefixReuseRate)} hint={`${formatNumber(prefixReused)} / ${formatNumber(prefixApplied)} applied · ${formatNumber(prefixActiveStates)} active`} tone="emerald" />
+                <MetricCard icon={Database} label="Checkpoint 刷新" value={formatNumber(prefixRefreshes)} hint={`${formatNumber(prefixFallbackFullUploads)} 次 full upload fallback`} tone="amber" />
+                <MetricCard icon={History} label="Tail 大小" value={formatBytes(prefixTailAvg)} hint={`p95 ${formatBytes(prefixTailP95)} · inline rolling tail`} tone="cyan" />
+                <MetricCard icon={Zap} label="Current Input 耗时" value={formatElapsed(prefixFileMsAvg)} hint={`reuse ${formatElapsed(prefixFileMsReusedAvg)} / refresh ${formatElapsed(prefixFileMsRefreshAvg)}`} />
             </div>
 
             <div className="ops-panel p-4">
