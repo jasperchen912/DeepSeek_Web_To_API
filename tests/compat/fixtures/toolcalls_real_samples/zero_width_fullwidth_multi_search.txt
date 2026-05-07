@@ -1,0 +1,14 @@
+<｜DSML‍▁tool_calls>
+<｜DSML‍▁invoke name="web_search">
+<｜DSML‍▁parameter name="count"><![CDATA[8]]></｜DSML‍▁parameter>
+<｜DSML‍▁parameter name="query"><![CDATA[Chiang Mai cheapest international schools under 5000 USD 2025 2026 Panyaden Lanna ABS Ambassadorial bilingual quality]]></｜DSML‍▁parameter>
+</｜DSML‍▁invoke>
+<｜DSML‍▁invoke name="web_search">
+<｜DSML‍▁parameter name="count"><![CDATA[8]]></｜DSML‍▁parameter>
+<｜DSML‍▁parameter name="query"><![CDATA[Spain public school quality ranking PISA 2025 foreign students integration English support]]></｜DSML‍▁parameter>
+</｜DSML‍▁invoke>
+<｜DSML‍▁invoke name="web_search">
+<｜DSML‍▁parameter name="count"><![CDATA[8]]></｜DSML‍▁parameter>
+<｜DSML‍▁parameter name="query"><![CDATA[Portugal public school digital nomad children enrollment quality free education expat 2025 2026]]></｜DSML‍▁parameter>
+</｜DSML‍▁invoke>
+</｜DSML‍▁tool_calls>

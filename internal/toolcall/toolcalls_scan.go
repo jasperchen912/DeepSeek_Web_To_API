@@ -38,6 +38,17 @@ func canonicalToolMarkupName(name string) string {
 	}
 }
 
+func CanonicalToolMarkupName(name string) string {
+	return canonicalToolMarkupName(name)
+}
+
+func IsToolCallsWrapperTag(tag ToolMarkupTag) bool {
+	if canonicalToolMarkupName(tag.Name) != "tool_calls" {
+		return false
+	}
+	return tag.Name != "tool_call" || tag.DSMLLike
+}
+
 type ToolMarkupTag struct {
 	Start       int
 	End         int
@@ -90,7 +101,7 @@ func ContainsToolCallWrapperSyntaxOutsideIgnored(text string) (hasDSML, hasCanon
 			continue
 		}
 		if tag, ok := scanToolMarkupTagAt(text, i); ok {
-			if tag.Name != "tool_calls" {
+			if !IsToolCallsWrapperTag(tag) {
 				i = tag.End + 1
 				continue
 			}
@@ -139,7 +150,7 @@ func FindMatchingToolMarkupClose(text string, open ToolMarkupTag) (ToolMarkupTag
 		if !ok {
 			return ToolMarkupTag{}, false
 		}
-		if tag.Name != open.Name {
+		if canonicalToolMarkupName(tag.Name) != canonicalToolMarkupName(open.Name) {
 			pos = tag.End + 1
 			continue
 		}
@@ -173,7 +184,7 @@ func scanToolMarkupTagAt(text string, start int) (ToolMarkupTag, bool) {
 	i, dsmlLike := consumeToolMarkupNamePrefix(lower, text, i)
 	name, nameLen := matchToolMarkupName(lower, i)
 	if nameLen == 0 {
-		return ToolMarkupTag{}, false
+		return scanFuzzyDSMLToolCallsTagAt(text, start)
 	}
 	nameEnd := i + nameLen
 	nameEndBeforePipes := nameEnd
@@ -182,12 +193,12 @@ func scanToolMarkupTagAt(text string, start int) (ToolMarkupTag, bool) {
 	}
 	hasTrailingPipe := nameEnd > nameEndBeforePipes
 	if !hasToolMarkupBoundary(text, nameEnd) {
-		return ToolMarkupTag{}, false
+		return scanFuzzyDSMLToolCallsTagAt(text, start)
 	}
 	end := findXMLTagEnd(text, nameEnd)
 	if end < 0 {
 		if !hasTrailingPipe {
-			return ToolMarkupTag{}, false
+			return scanFuzzyDSMLToolCallsTagAt(text, start)
 		}
 		end = nameEnd - 1
 	}
@@ -208,6 +219,74 @@ func scanToolMarkupTagAt(text string, start int) (ToolMarkupTag, bool) {
 		DSMLLike:    dsmlLike,
 		Canonical:   !dsmlLike,
 	}, true
+}
+
+func scanFuzzyDSMLToolCallsTagAt(text string, start int) (ToolMarkupTag, bool) {
+	if start < 0 || start >= len(text) || text[start] != '<' {
+		return ToolMarkupTag{}, false
+	}
+	lower := strings.ToLower(text)
+	i := start + 1
+	for i < len(text) && text[i] == '<' {
+		i++
+	}
+	i = skipToolMarkupWhitespace(text, i)
+	closing := false
+	if i < len(text) && text[i] == '/' {
+		closing = true
+		i++
+	}
+
+	sawDSML := false
+	for i < len(text) {
+		if strings.HasPrefix(lower[i:], "tool_calls") {
+			if !sawDSML {
+				return ToolMarkupTag{}, false
+			}
+			nameEnd := i + len("tool_calls")
+			nameEndBeforePipes := nameEnd
+			for next, ok := consumeToolMarkupPipe(text, nameEnd); ok; next, ok = consumeToolMarkupPipe(text, nameEnd) {
+				nameEnd = next
+			}
+			hasTrailingPipe := nameEnd > nameEndBeforePipes
+			if !hasToolMarkupBoundary(text, nameEnd) {
+				return ToolMarkupTag{}, false
+			}
+			end := findXMLTagEnd(text, nameEnd)
+			if end < 0 {
+				if !hasTrailingPipe {
+					return ToolMarkupTag{}, false
+				}
+				end = nameEnd - 1
+			}
+			if hasTrailingPipe {
+				if nextLT := strings.IndexByte(text[nameEnd:], '<'); nextLT >= 0 && end >= nameEnd+nextLT {
+					end = nameEnd - 1
+				}
+			}
+			trimmed := strings.TrimSpace(text[start : end+1])
+			return ToolMarkupTag{
+				Start:       start,
+				End:         end,
+				NameStart:   i,
+				NameEnd:     nameEnd,
+				Name:        "tool_calls",
+				Closing:     closing,
+				SelfClosing: strings.HasSuffix(trimmed, "/>"),
+				DSMLLike:    true,
+				Canonical:   false,
+			}, true
+		}
+		next, consumedDSML, ok := consumeFuzzyDSMLWrapperToken(lower, text, i)
+		if !ok {
+			return ToolMarkupTag{}, false
+		}
+		if consumedDSML {
+			sawDSML = true
+		}
+		i = next
+	}
+	return ToolMarkupTag{}, false
 }
 
 func IsPartialToolMarkupTagPrefix(text string) bool {
@@ -238,9 +317,45 @@ func IsPartialToolMarkupTagPrefix(text string) bool {
 		}
 		next, ok := consumeToolMarkupNamePrefixOnce(lower, text, i, dsmlLike)
 		if !ok {
-			return false
+			return isPartialFuzzyDSMLToolCallsTagPrefix(text)
 		}
 		dsmlLike = true
+		i = next
+	}
+	return false
+}
+
+func isPartialFuzzyDSMLToolCallsTagPrefix(text string) bool {
+	lower := strings.ToLower(text)
+	i := 1
+	for i < len(text) && text[i] == '<' {
+		i++
+	}
+	i = skipToolMarkupWhitespace(text, i)
+	if i >= len(text) {
+		return true
+	}
+	if text[i] == '/' {
+		i++
+	}
+	sawDSML := false
+	for i <= len(text) {
+		if i == len(text) {
+			return true
+		}
+		if sawDSML && strings.HasPrefix("tool_calls", lower[i:]) {
+			return true
+		}
+		if hasToolMarkupDSMLPrefixPrefix(lower[i:]) {
+			return true
+		}
+		next, consumedDSML, ok := consumeFuzzyDSMLWrapperToken(lower, text, i)
+		if !ok {
+			return false
+		}
+		if consumedDSML {
+			sawDSML = true
+		}
 		i = next
 	}
 	return false
@@ -286,6 +401,36 @@ func consumeToolMarkupNamePrefixOnce(lower, text string, idx int, allowTokenArti
 		}
 	}
 	return idx, false
+}
+
+func consumeFuzzyDSMLWrapperToken(lower, text string, idx int) (next int, consumedDSML bool, ok bool) {
+	if next, ok := consumeToolMarkupPipe(text, idx); ok {
+		return next, false, true
+	}
+	if next, ok := consumeToolMarkupSpaceSeparator(text, idx); ok {
+		return next, false, true
+	}
+	if strings.HasPrefix(lower[idx:], "{:dsml}") {
+		return idx + len("{:dsml}"), true, true
+	}
+	if strings.HasPrefix(lower[idx:], "dsml") {
+		return idx + len("dsml"), true, true
+	}
+	if next, ok := consumeToolMarkupTokenArtifact(text, idx); ok {
+		return next, false, true
+	}
+	return idx, false, false
+}
+
+func skipToolMarkupWhitespace(text string, idx int) int {
+	for idx < len(text) {
+		next, ok := consumeToolMarkupSpaceSeparator(text, idx)
+		if !ok {
+			return idx
+		}
+		idx = next
+	}
+	return idx
 }
 
 func consumeToolMarkupSpaceSeparator(text string, idx int) (int, bool) {

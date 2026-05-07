@@ -13,16 +13,27 @@ var xmlToolCallsClosePattern = regexp.MustCompile(`(?is)</tool_calls>`)
 var xmlInvokeStartPattern = regexp.MustCompile(`(?is)<invoke\b[^>]*\bname\s*=\s*("([^"]*)"|'([^']*)')`)
 var cdataBRSeparatorPattern = regexp.MustCompile(`(?i)<br\s*/?>`)
 
-func parseXMLToolCalls(text string) []ParsedToolCall {
+type xmlToolCallParseResult struct {
+	Calls      []ParsedToolCall
+	Repaired   bool
+	RepairKind string
+}
+
+func parseXMLToolCallsWithMetadata(text string) xmlToolCallParseResult {
+	result := xmlToolCallParseResult{}
 	wrappers := findXMLElementBlocks(text, "tool_calls")
 	if len(wrappers) == 0 {
 		repaired := repairMissingXMLToolCallsOpeningWrapper(text)
 		if repaired != text {
 			wrappers = findXMLElementBlocks(repaired, "tool_calls")
+			if len(wrappers) > 0 {
+				result.Repaired = true
+				result.RepairKind = "missing_wrapper"
+			}
 		}
 	}
 	if len(wrappers) == 0 {
-		return nil
+		return result
 	}
 	out := make([]ParsedToolCall, 0, len(wrappers))
 	for _, wrapper := range wrappers {
@@ -35,9 +46,10 @@ func parseXMLToolCalls(text string) []ParsedToolCall {
 		}
 	}
 	if len(out) == 0 {
-		return nil
+		return result
 	}
-	return out
+	result.Calls = out
+	return result
 }
 
 func repairMissingXMLToolCallsOpeningWrapper(text string) string {
@@ -229,18 +241,52 @@ func findCDATAEnd(lower string, from int) (idx int, markerLen int, ok bool) {
 	if from >= len(lower) {
 		return 0, 0, false
 	}
+	const openMarker = "<![cdata["
+	depth := 1
+	for pos := maxInt(from, 0); pos < len(lower); {
+		openRel := strings.Index(lower[pos:], openMarker)
+		closeRel, closeLen := findNearestCDATAEndMarker(lower, pos)
+		if closeRel < 0 {
+			return 0, 0, false
+		}
+		if openRel >= 0 && openRel < closeRel {
+			if !hasCDATAEndMarkerAfter(lower, pos+closeRel+closeLen) {
+				return 0, 0, false
+			}
+			depth++
+			pos += openRel + len(openMarker)
+			continue
+		}
+		depth--
+		if depth == 0 {
+			return pos + closeRel, closeLen, true
+		}
+		pos += closeRel + closeLen
+	}
+	return 0, 0, false
+}
+
+func findNearestCDATAEndMarker(text string, from int) (rel int, markerLen int) {
+	if from >= len(text) {
+		return -1, 0
+	}
 	const asciiClose = "]]>"
 	const fullwidthClose = "]]＞"
-	asciiRel := strings.Index(lower[from:], asciiClose)
-	fullwidthRel := strings.Index(lower[from:], fullwidthClose)
+	asciiRel := strings.Index(text[from:], asciiClose)
+	fullwidthRel := strings.Index(text[from:], fullwidthClose)
 	switch {
 	case asciiRel < 0 && fullwidthRel < 0:
-		return 0, 0, false
+		return -1, 0
 	case asciiRel >= 0 && (fullwidthRel < 0 || asciiRel <= fullwidthRel):
-		return from + asciiRel, len(asciiClose), true
+		return asciiRel, len(asciiClose)
 	default:
-		return from + fullwidthRel, len(fullwidthClose), true
+		return fullwidthRel, len(fullwidthClose)
 	}
+}
+
+func hasCDATAEndMarkerAfter(text string, from int) bool {
+	rel, _ := findNearestCDATAEndMarker(text, from)
+	return rel >= 0
 }
 
 func findXMLTagEnd(text string, from int) int {
@@ -334,6 +380,12 @@ func parseInvokeParameterValue(paramName, raw string) any {
 		return value
 	}
 	decoded := html.UnescapeString(extractRawTagValue(trimmed))
+	if parsed, ok := parseAngleWrappedJSONLiteral(decoded); ok {
+		if parsedArray, ok := coerceArrayValue(parsed, paramName); ok {
+			return parsedArray
+		}
+		return parsed
+	}
 	if strings.Contains(decoded, "<") && strings.Contains(decoded, ">") {
 		if parsedValue, ok := parseXMLFragmentValue(decoded); ok {
 			switch v := parsedValue.(type) {
@@ -390,6 +442,18 @@ func parseInvokeParameterValue(paramName, raw string) any {
 		return parsed
 	}
 	return decoded
+}
+
+func parseAngleWrappedJSONLiteral(raw string) (any, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) < 3 || !strings.HasPrefix(trimmed, "<") || !strings.HasSuffix(trimmed, ">") {
+		return nil, false
+	}
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "<"), ">"))
+	if inner == "" || strings.ContainsAny(inner, "<>") {
+		return nil, false
+	}
+	return parseJSONLiteralValue(inner)
 }
 
 func parseStructuredCDATAParameterValue(paramName, raw string) (any, bool) {

@@ -6,6 +6,7 @@ const {
 const {
   parseMarkupToolCalls,
   stripFencedCodeBlocks,
+  containsToolMarkupSyntaxOutsideIgnored,
   containsToolCallWrapperSyntaxOutsideIgnored,
   sanitizeLooseCDATA,
 } = require('./parse_payload');
@@ -36,30 +37,7 @@ function parseToolCalls(text, toolNames) {
 }
 
 function parseToolCallsDetailed(text, toolNames) {
-  const result = emptyParseResult();
-  const normalized = toStringSafe(text);
-  if (!normalized) {
-    return result;
-  }
-  result.sawToolCallSyntax = looksLikeToolCallSyntax(normalized);
-  if (shouldSkipToolCallParsingForCodeFenceExample(normalized)) {
-    return result;
-  }
-  // XML markup parsing only.
-  const candidate = sanitizeLooseCDATA(normalized);
-  let parsed = parseMarkupToolCalls(candidate);
-  if (parsed.length === 0 && candidate !== normalized) {
-    parsed = parseMarkupToolCalls(normalized);
-  }
-  if (parsed.length === 0) {
-    return result;
-  }
-  result.sawToolCallSyntax = true;
-  const filtered = filterToolCallsDetailed(parsed, toolNames);
-  result.calls = filtered.calls;
-  result.rejectedToolNames = filtered.rejectedToolNames;
-  result.rejectedByPolicy = filtered.rejectedToolNames.length > 0 && filtered.calls.length === 0;
-  return result;
+  return parseDetailedMarkupOnly(text, toolNames);
 }
 
 function parseStandaloneToolCalls(text, toolNames) {
@@ -67,23 +45,44 @@ function parseStandaloneToolCalls(text, toolNames) {
 }
 
 function parseStandaloneToolCallsDetailed(text, toolNames) {
+  return parseDetailedMarkupOnly(text, toolNames);
+}
+
+function parseDetailedMarkupOnly(text, toolNames) {
   const result = emptyParseResult();
-  const trimmed = toStringSafe(text);
+  const trimmed = toStringSafe(text).trim();
   if (!trimmed) {
+    result.rejectReason = 'empty_input';
     return result;
   }
   result.sawToolCallSyntax = looksLikeToolCallSyntax(trimmed);
-  if (shouldSkipToolCallParsingForCodeFenceExample(trimmed)) {
+  result.variant = classifyToolCallVariant(trimmed);
+  if (!result.sawToolCallSyntax) {
+    result.rejectReason = 'no_tool_call_wrapper';
     return result;
   }
-  // XML markup parsing only.
-  const candidate = sanitizeLooseCDATA(trimmed);
+  const stripped = stripFencedCodeBlocks(trimmed).trim();
+  if (!stripped || !looksLikeToolCallSyntax(stripped)) {
+    result.variant = 'fenced_tool_call_example';
+    result.rejectReason = 'no_tool_call_outside_fence';
+    return result;
+  }
+
+  const candidate = sanitizeLooseCDATA(stripped);
+  const repairedCandidate = candidate !== stripped;
   let parsed = parseMarkupToolCalls(candidate);
-  if (parsed.length === 0 && candidate !== trimmed) {
-    parsed = parseMarkupToolCalls(trimmed);
+  let parsedRepairedCandidate = repairedCandidate && parsed.length > 0;
+  if (parsed.length === 0 && repairedCandidate) {
+    parsed = parseMarkupToolCalls(stripped);
+    parsedRepairedCandidate = false;
   }
   if (parsed.length === 0) {
+    result.rejectReason = 'parse_failed';
     return result;
+  }
+  if (parsedRepairedCandidate) {
+    result.repaired = true;
+    result.variant = withRepairVariant(result.variant, 'loose_cdata');
   }
 
   result.sawToolCallSyntax = true;
@@ -91,6 +90,11 @@ function parseStandaloneToolCallsDetailed(text, toolNames) {
   result.calls = filtered.calls;
   result.rejectedToolNames = filtered.rejectedToolNames;
   result.rejectedByPolicy = filtered.rejectedToolNames.length > 0 && filtered.calls.length === 0;
+  if (result.rejectedByPolicy) {
+    result.rejectReason = 'policy_rejected';
+  } else if (filtered.calls.length === 0) {
+    result.rejectReason = 'empty_arguments';
+  }
   return result;
 }
 
@@ -100,6 +104,9 @@ function emptyParseResult() {
     sawToolCallSyntax: false,
     rejectedByPolicy: false,
     rejectedToolNames: [],
+    repaired: false,
+    variant: '',
+    rejectReason: '',
   };
 }
 
@@ -149,12 +156,33 @@ function looksLikeToolCallSyntax(text) {
   return styles.dsml || styles.canonical;
 }
 
-function shouldSkipToolCallParsingForCodeFenceExample(text) {
-  if (!looksLikeToolCallSyntax(text)) {
-    return false;
+function classifyToolCallVariant(text) {
+  const styles = containsToolMarkupSyntaxOutsideIgnored(text);
+  if (styles.dsml && styles.canonical) {
+    return 'mixed_dsml_xml';
   }
-  const stripped = stripFencedCodeBlocks(text);
-  return !looksLikeToolCallSyntax(stripped);
+  if (styles.dsml) {
+    return 'dsml';
+  }
+  if (styles.canonical) {
+    return 'canonical_xml';
+  }
+  return 'unknown';
+}
+
+function withRepairVariant(base, repair) {
+  const repairName = toStringSafe(repair).trim();
+  if (!repairName) {
+    return base;
+  }
+  const variant = toStringSafe(base).trim();
+  if (!variant || variant === 'unknown') {
+    return `repaired_${repairName}`;
+  }
+  if (variant.includes(`repaired_${repairName}`)) {
+    return variant;
+  }
+  return `${variant}+repaired_${repairName}`;
 }
 
 module.exports = {

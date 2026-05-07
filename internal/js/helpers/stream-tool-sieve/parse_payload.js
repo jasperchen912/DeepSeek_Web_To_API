@@ -1,8 +1,9 @@
 'use strict';
 
 const CDATA_PATTERN = /^<!\[CDATA\[([\s\S]*?)]](?:>|＞)$/i;
+const MARKDOWN_CDATA_OPEN_PATTERN = /<\*+!\[CDATA\[/gi;
 const XML_ATTR_PATTERN = /\b([a-z0-9_:-]+)\s*=\s*("([^"]*)"|'([^']*)')/gi;
-const TOOL_MARKUP_NAMES = ['tool_calls', 'invoke', 'parameter'];
+const TOOL_MARKUP_NAMES = ['tool_calls', 'tool_call', 'invoke', 'parameter', '工具调用', '调用', '参数'];
 const TOOL_MARKUP_TOKEN_ARTIFACTS = ['\u200b', '\u200c', '\u200d', '\u2060', '\ufeff', '\u2581'];
 
 const {
@@ -149,6 +150,27 @@ function normalizeDSMLToolCallMarkup(text) {
   };
 }
 
+function canonicalToolMarkupName(name) {
+  switch (name) {
+    case '工具调用':
+    case 'tool_call':
+      return 'tool_calls';
+    case '调用':
+      return 'invoke';
+    case '参数':
+      return 'parameter';
+    default:
+      return name;
+  }
+}
+
+function isToolCallsWrapperTag(tag) {
+  if (!tag || canonicalToolMarkupName(tag.name) !== 'tool_calls') {
+    return false;
+  }
+  return tag.name !== 'tool_call' || tag.dsmlLike;
+}
+
 function containsDSMLToolMarkup(text) {
   return containsToolMarkupSyntaxOutsideIgnored(text).dsml;
 }
@@ -175,7 +197,7 @@ function containsToolCallWrapperSyntaxOutsideIgnored(text) {
     }
     const tag = scanToolMarkupTagAt(raw, i);
     if (tag) {
-      if (tag.name !== 'tool_calls') {
+      if (!isToolCallsWrapperTag(tag)) {
         i = tag.end + 1;
         continue;
       }
@@ -247,9 +269,10 @@ function replaceDSMLToolMarkupOutsideIgnored(text) {
     }
     const tag = scanToolMarkupTagAt(raw, i);
     if (tag) {
-      if (tag.dsmlLike) {
+      const canonicalName = canonicalToolMarkupName(tag.name);
+      if (tag.dsmlLike || canonicalName !== tag.name) {
         const tail = canonicalDSMLTagTail(raw.slice(tag.nameEnd, tag.end + 1));
-        out += `<${tag.closing ? '/' : ''}${tag.name}${tail}`;
+        out += `<${tag.closing ? '/' : ''}${canonicalName}${tail}`;
         if (!tail.endsWith('>')) {
           out += '>';
         }
@@ -454,16 +477,48 @@ function skipXmlIgnoredSection(lower, i) {
 
 function findCDATAEnd(text, from) {
   const raw = toRawString(text);
+  const lower = raw.toLowerCase();
+  const openMarker = '<![cdata[';
+  let depth = 1;
+  for (let pos = Math.max(0, from || 0); pos < raw.length;) {
+    const openRel = lower.indexOf(openMarker, pos);
+    const close = findNearestCDATAEndMarker(raw, pos);
+    if (!close.ok) {
+      return { ok: false, idx: -1, len: 0, fullwidth: false };
+    }
+    if (openRel >= 0 && openRel - pos < close.rel) {
+      if (!hasCDATAEndMarkerAfter(raw, pos + close.rel + close.len)) {
+        return { ok: false, idx: -1, len: 0, fullwidth: false };
+      }
+      depth += 1;
+      pos = openRel + openMarker.length;
+      continue;
+    }
+    depth -= 1;
+    if (depth === 0) {
+      return { ok: true, idx: pos + close.rel, len: close.len, fullwidth: close.fullwidth };
+    }
+    pos += close.rel + close.len;
+  }
+  return { ok: false, idx: -1, len: 0, fullwidth: false };
+}
+
+function findNearestCDATAEndMarker(text, from) {
+  const raw = toRawString(text);
   const start = Math.max(0, from || 0);
   const asciiIdx = raw.indexOf(']]>', start);
   const fullwidthIdx = raw.indexOf(']]＞', start);
   if (asciiIdx < 0 && fullwidthIdx < 0) {
-    return { ok: false, idx: -1, len: 0, fullwidth: false };
+    return { ok: false, rel: -1, len: 0, fullwidth: false };
   }
   if (asciiIdx >= 0 && (fullwidthIdx < 0 || asciiIdx <= fullwidthIdx)) {
-    return { ok: true, idx: asciiIdx, len: ']]>'.length, fullwidth: false };
+    return { ok: true, rel: asciiIdx - start, len: ']]>'.length, fullwidth: false };
   }
-  return { ok: true, idx: fullwidthIdx, len: ']]＞'.length, fullwidth: true };
+  return { ok: true, rel: fullwidthIdx - start, len: ']]＞'.length, fullwidth: true };
+}
+
+function hasCDATAEndMarkerAfter(text, from) {
+  return findNearestCDATAEndMarker(text, from).ok;
 }
 
 function toRawString(v) {
@@ -477,7 +532,7 @@ function toRawString(v) {
 }
 
 function scanToolMarkupTagAt(text, start) {
-  const raw = toStringSafe(text);
+  const raw = toRawString(text);
   if (!raw || start < 0 || start >= raw.length || raw[start] !== '<') {
     return null;
   }
@@ -495,7 +550,7 @@ function scanToolMarkupTagAt(text, start) {
   const dsmlLike = prefix.dsmlLike;
   const { name, len } = matchToolMarkupName(lower, i);
   if (!name) {
-    return null;
+    return scanFuzzyDSMLToolCallsTagAt(raw, start);
   }
   const originalNameEnd = i + len;
   let nameEnd = originalNameEnd;
@@ -504,12 +559,12 @@ function scanToolMarkupTagAt(text, start) {
   }
   const hasTrailingPipe = nameEnd > originalNameEnd;
   if (!hasXmlTagBoundary(raw, nameEnd)) {
-    return null;
+    return scanFuzzyDSMLToolCallsTagAt(raw, start);
   }
   let end = findXmlTagEnd(raw, nameEnd);
   if (end < 0) {
     if (!hasTrailingPipe) {
-      return null;
+      return scanFuzzyDSMLToolCallsTagAt(raw, start);
     }
     end = nameEnd - 1;
   }
@@ -536,8 +591,80 @@ function scanToolMarkupTagAt(text, start) {
   };
 }
 
+function scanFuzzyDSMLToolCallsTagAt(text, start) {
+  const raw = toRawString(text);
+  if (!raw || start < 0 || start >= raw.length || raw[start] !== '<') {
+    return null;
+  }
+  const lower = raw.toLowerCase();
+  let i = start + 1;
+  while (i < raw.length && raw[i] === '<') {
+    i += 1;
+  }
+  i = skipToolMarkupWhitespace(raw, i);
+  const closing = raw[i] === '/';
+  if (closing) {
+    i += 1;
+  }
+
+  let sawDSML = false;
+  while (i < raw.length) {
+    if (lower.startsWith('tool_calls', i)) {
+      if (!sawDSML) {
+        return null;
+      }
+      let nameEnd = i + 'tool_calls'.length;
+      const originalNameEnd = nameEnd;
+      while (nameEnd < raw.length && isToolMarkupPipe(raw[nameEnd])) {
+        nameEnd += 1;
+      }
+      const hasTrailingPipe = nameEnd > originalNameEnd;
+      if (!hasXmlTagBoundary(raw, nameEnd)) {
+        return null;
+      }
+      let end = findXmlTagEnd(raw, nameEnd);
+      if (end < 0) {
+        if (!hasTrailingPipe) {
+          return null;
+        }
+        end = nameEnd - 1;
+      }
+      if (hasTrailingPipe) {
+        const nextLT = raw.indexOf('<', nameEnd);
+        if (nextLT >= 0 && end >= nextLT) {
+          end = nameEnd - 1;
+        }
+      }
+      if (end < 0) {
+        return null;
+      }
+      const tagText = raw.slice(start, end + 1).trim();
+      return {
+        start,
+        end,
+        nameStart: i,
+        nameEnd,
+        name: 'tool_calls',
+        closing,
+        selfClosing: tagText.endsWith('/>') || tagText.endsWith('/＞'),
+        dsmlLike: true,
+        canonical: false,
+      };
+    }
+    const next = consumeFuzzyDSMLWrapperToken(raw, lower, i);
+    if (!next.ok) {
+      return null;
+    }
+    if (next.dsml) {
+      sawDSML = true;
+    }
+    i = next.next;
+  }
+  return null;
+}
+
 function findToolMarkupTagOutsideIgnored(text, from) {
-  const raw = toStringSafe(text);
+  const raw = toRawString(text);
   const lower = raw.toLowerCase();
   for (let i = Math.max(0, from || 0); i < raw.length;) {
     const skipped = skipXmlIgnoredSection(lower, i);
@@ -558,7 +685,7 @@ function findToolMarkupTagOutsideIgnored(text, from) {
 }
 
 function findMatchingToolMarkupClose(text, openTag) {
-  const raw = toStringSafe(text);
+  const raw = toRawString(text);
   if (!raw || !openTag || !openTag.name || openTag.closing) {
     return null;
   }
@@ -568,7 +695,7 @@ function findMatchingToolMarkupClose(text, openTag) {
     if (!tag) {
       return null;
     }
-    if (tag.name !== openTag.name) {
+    if (canonicalToolMarkupName(tag.name) !== canonicalToolMarkupName(openTag.name)) {
       pos = tag.end + 1;
       continue;
     }
@@ -586,7 +713,7 @@ function findMatchingToolMarkupClose(text, openTag) {
 }
 
 function findPartialToolMarkupStart(text) {
-  const raw = toStringSafe(text);
+  const raw = toRawString(text);
   const lastLT = raw.lastIndexOf('<');
   if (lastLT < 0) {
     return -1;
@@ -612,7 +739,7 @@ function isToolMarkupPipe(ch) {
 }
 
 function isPartialToolMarkupTagPrefix(text) {
-  const raw = toStringSafe(text);
+  const raw = toRawString(text);
   if (!raw || raw[0] !== '<' || raw.includes('>') || raw.includes('＞')) {
     return false;
   }
@@ -635,14 +762,51 @@ function isPartialToolMarkupTagPrefix(text) {
     if (hasToolMarkupNamePrefix(lower.slice(i))) {
       return true;
     }
-    if ('dsml'.startsWith(lower.slice(i))) {
+    if ('dsml'.startsWith(lower.slice(i)) || '{:dsml}'.startsWith(lower.slice(i))) {
       return true;
     }
     const next = consumeToolMarkupNamePrefixOnce(raw, lower, i, dsmlLike);
     if (!next.ok) {
-      return false;
+      return isPartialFuzzyDSMLToolCallsTagPrefix(raw);
     }
     dsmlLike = true;
+    i = next.next;
+  }
+  return false;
+}
+
+function isPartialFuzzyDSMLToolCallsTagPrefix(text) {
+  const raw = toRawString(text);
+  const lower = raw.toLowerCase();
+  let i = 1;
+  while (i < raw.length && raw[i] === '<') {
+    i += 1;
+  }
+  i = skipToolMarkupWhitespace(raw, i);
+  if (i >= raw.length) {
+    return true;
+  }
+  if (raw[i] === '/') {
+    i += 1;
+  }
+  let sawDSML = false;
+  while (i <= raw.length) {
+    if (i === raw.length) {
+      return true;
+    }
+    if (sawDSML && 'tool_calls'.startsWith(lower.slice(i))) {
+      return true;
+    }
+    if (hasToolMarkupDSMLPrefixPrefix(lower.slice(i))) {
+      return true;
+    }
+    const next = consumeFuzzyDSMLWrapperToken(raw, lower, i);
+    if (!next.ok) {
+      return false;
+    }
+    if (next.dsml) {
+      sawDSML = true;
+    }
     i = next.next;
   }
   return false;
@@ -668,6 +832,9 @@ function consumeToolMarkupNamePrefixOnce(raw, lower, idx, allowTokenArtifacts) {
   if (idx < raw.length && [' ', '\t', '\r', '\n'].includes(raw[idx])) {
     return { next: idx + 1, ok: true };
   }
+  if (lower.startsWith('{:dsml}', idx)) {
+    return { next: idx + '{:dsml}'.length, ok: true };
+  }
   if (lower.startsWith('dsml', idx)) {
     return { next: idx + 'dsml'.length, ok: true };
   }
@@ -679,6 +846,39 @@ function consumeToolMarkupNamePrefixOnce(raw, lower, idx, allowTokenArtifacts) {
     }
   }
   return { next: idx, ok: false };
+}
+
+function consumeFuzzyDSMLWrapperToken(raw, lower, idx) {
+  if (idx < raw.length && isToolMarkupPipe(raw[idx])) {
+    return { next: idx + 1, dsml: false, ok: true };
+  }
+  if (idx < raw.length && [' ', '\t', '\r', '\n'].includes(raw[idx])) {
+    return { next: idx + 1, dsml: false, ok: true };
+  }
+  if (lower.startsWith('{:dsml}', idx)) {
+    return { next: idx + '{:dsml}'.length, dsml: true, ok: true };
+  }
+  if (lower.startsWith('dsml', idx)) {
+    return { next: idx + 'dsml'.length, dsml: true, ok: true };
+  }
+  for (const artifact of TOOL_MARKUP_TOKEN_ARTIFACTS) {
+    if (raw.startsWith(artifact, idx)) {
+      return { next: idx + artifact.length, dsml: false, ok: true };
+    }
+  }
+  return { next: idx, dsml: false, ok: false };
+}
+
+function hasToolMarkupDSMLPrefixPrefix(lowerTail) {
+  return ['dsml', '{:dsml}'].some((prefix) => prefix.startsWith(lowerTail));
+}
+
+function skipToolMarkupWhitespace(raw, idx) {
+  let next = idx;
+  while (next < raw.length && [' ', '\t', '\r', '\n'].includes(raw[next])) {
+    next += 1;
+  }
+  return next;
 }
 
 function hasToolMarkupNamePrefix(lowerTail) {
@@ -931,6 +1131,11 @@ function parseMarkupValue(raw, paramName = '') {
     return '';
   }
 
+  const angleLiteral = parseAngleWrappedJSONLiteral(s);
+  if (angleLiteral.ok) {
+    return angleLiteral.value;
+  }
+
   if (s.includes('<') && s.includes('>')) {
     const nested = unwrapItemOnlyMarkupValue(parseMarkupInput(s));
     if (Array.isArray(nested)) {
@@ -1080,6 +1285,18 @@ function extractStandaloneCDATA(inner) {
     return { ok: true, value: s.slice('<![CDATA['.length) };
   }
   return { ok: false, value: '' };
+}
+
+function parseAngleWrappedJSONLiteral(raw) {
+  const s = toStringSafe(raw).trim();
+  if (s.length < 3 || !s.startsWith('<') || !s.endsWith('>')) {
+    return { ok: false, value: null };
+  }
+  const inner = s.slice(1, -1).trim();
+  if (!inner || inner.includes('<') || inner.includes('>')) {
+    return { ok: false, value: null };
+  }
+  return parseJSONLiteralValue(inner);
 }
 
 function parseJSONLiteralValue(raw) {
@@ -1318,17 +1535,18 @@ function repairLooseJSON(s) {
 }
 
 function sanitizeLooseCDATA(text) {
-  const raw = toStringSafe(text);
+  let raw = toStringSafe(text);
   if (!raw) {
     return '';
   }
+  raw = raw.replace(MARKDOWN_CDATA_OPEN_PATTERN, '<![CDATA[');
+  let changed = raw !== toStringSafe(text);
   const lower = raw.toLowerCase();
   const openMarker = '<![cdata[';
   const closeMarker = ']]>';
 
   let out = '';
   let pos = 0;
-  let changed = false;
   while (pos < raw.length) {
     const startRel = lower.indexOf(openMarker, pos);
     if (startRel < 0) {
@@ -1340,8 +1558,10 @@ function sanitizeLooseCDATA(text) {
     out += raw.slice(pos, start);
 
     const proper = findCDATAEnd(raw, contentStart);
-    const properRel = proper.ok ? proper.idx : -1;
-    const nestedOpenRel = lower.indexOf(openMarker, contentStart);
+    const properRel = proper.ok ? proper.idx - contentStart : -1;
+    const markdownRel = findMarkdownCDATAClose(raw, contentStart);
+    const nestedOpenAbs = lower.indexOf(openMarker, contentStart);
+    const nestedOpenRel = nestedOpenAbs >= 0 ? nestedOpenAbs - contentStart : -1;
     const parameterCloseRel = findUnclosedCDATAParameterClose(raw, contentStart);
     const missingLTParameterCloseRel = findMissingLTCDATAParameterClose(raw, contentStart);
     const earliestParameterCloseRel = minNonNegative(parameterCloseRel, missingLTParameterCloseRel);
@@ -1351,13 +1571,27 @@ function sanitizeLooseCDATA(text) {
       ? -1
       : properRel;
     if (effectiveProperRel >= 0) {
+      const closePos = contentStart + effectiveProperRel;
       if (proper.fullwidth) {
         changed = true;
-        out += raw.slice(start, effectiveProperRel) + closeMarker;
+        out += raw.slice(start, closePos) + closeMarker;
       } else {
-        out += raw.slice(start, effectiveProperRel + proper.len);
+        out += raw.slice(start, closePos + proper.len);
       }
-      pos = effectiveProperRel + proper.len;
+      pos = closePos + proper.len;
+      continue;
+    }
+    if (markdownRel >= 0 && earliestCandidate(markdownRel, parameterCloseRel, missingLTParameterCloseRel)) {
+      const closePos = contentStart + markdownRel;
+      changed = true;
+      out += raw.slice(start, closePos) + closeMarker;
+      pos = closePos;
+      while (pos < raw.length && raw[pos] === '*') {
+        pos += 1;
+      }
+      if (pos < raw.length && (raw[pos] === '>' || raw[pos] === '＞')) {
+        pos += 1;
+      }
       continue;
     }
     if (parameterCloseRel >= 0 && earliestCandidate(parameterCloseRel, missingLTParameterCloseRel)) {
@@ -1383,6 +1617,27 @@ function sanitizeLooseCDATA(text) {
   return changed ? out : raw;
 }
 
+function findMarkdownCDATAClose(text, from) {
+  const raw = toStringSafe(text);
+  for (let i = Math.max(0, from || 0); i < raw.length; i += 1) {
+    if (raw[i] !== '*') {
+      continue;
+    }
+    let j = i;
+    while (j < raw.length && raw[j] === '*') {
+      j += 1;
+    }
+    if (j - i < 2 || j >= raw.length || (raw[j] !== '>' && raw[j] !== '＞')) {
+      continue;
+    }
+    const tag = scanToolMarkupTagAt(raw, j + 1);
+    if (tag && tag.closing) {
+      return i - from;
+    }
+  }
+  return -1;
+}
+
 function earliestCandidate(candidate, ...others) {
   return others.every((other) => !(other >= 0 && other < candidate));
 }
@@ -1401,7 +1656,7 @@ function minNonNegative(...values) {
 }
 
 function findUnclosedCDATAParameterClose(text, from) {
-  const raw = toStringSafe(text);
+  const raw = toRawString(text);
   for (let i = Math.max(0, from || 0); i < raw.length; i += 1) {
     if (raw[i] !== '<') {
       continue;
@@ -1419,7 +1674,7 @@ function findUnclosedCDATAParameterClose(text, from) {
 }
 
 function findMissingLTCDATAParameterClose(text, from) {
-  const raw = toStringSafe(text);
+  const raw = toRawString(text);
   for (let i = Math.max(0, from || 0); i + 1 < raw.length; i += 1) {
     if ((raw[i] !== '>' && raw[i] !== '＞') || raw[i + 1] !== '/') {
       continue;
@@ -1508,6 +1763,8 @@ module.exports = {
   normalizeDSMLToolCallMarkup,
   containsToolMarkupSyntaxOutsideIgnored,
   containsToolCallWrapperSyntaxOutsideIgnored,
+  canonicalToolMarkupName,
+  isToolCallsWrapperTag,
   findToolMarkupTagOutsideIgnored,
   findMatchingToolMarkupClose,
   findPartialToolMarkupStart,

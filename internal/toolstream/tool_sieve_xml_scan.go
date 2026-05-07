@@ -12,7 +12,11 @@ func findFirstToolMarkupTagByNameFrom(s string, start int, name string, closing 
 		if !ok {
 			return toolcall.ToolMarkupTag{}, false
 		}
-		if tag.Name == name && tag.Closing == closing {
+		if name == "tool_calls" && !toolcall.IsToolCallsWrapperTag(tag) {
+			pos = tag.End + 1
+			continue
+		}
+		if toolcall.CanonicalToolMarkupName(tag.Name) == name && tag.Closing == closing {
 			return tag, true
 		}
 		pos = tag.End + 1

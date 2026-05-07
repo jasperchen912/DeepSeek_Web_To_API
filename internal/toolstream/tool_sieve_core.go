@@ -150,6 +150,10 @@ func processRecoveredToolCapture(recovered string, toolNames []string) []Event {
 	if recovered == "" {
 		return nil
 	}
+	parsed := toolcall.ParseStandaloneToolCallsDetailed(recovered, toolNames)
+	if len(parsed.Calls) > 0 {
+		return []Event{{ToolCalls: parsed.Calls}}
+	}
 	var recoveredState State
 	events := ProcessChunk(&recoveredState, recovered, toolNames)
 	events = append(events, Flush(&recoveredState, toolNames)...)

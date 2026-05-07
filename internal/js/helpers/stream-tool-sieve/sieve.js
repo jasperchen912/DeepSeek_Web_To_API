@@ -6,6 +6,7 @@ const {
   insideCodeFenceWithState,
 } = require('./state');
 const { trimWrappingJSONFence } = require('./jsonscan');
+const { parseToolCallsDetailed } = require('./parse');
 const {
   findToolMarkupTagOutsideIgnored,
   sanitizeLooseCDATA,
@@ -148,6 +149,10 @@ function flushToolSieve(state, toolNames) {
 function processRecoveredToolCapture(recovered, toolNames) {
   if (!recovered) {
     return [];
+  }
+  const parsed = parseToolCallsDetailed(recovered, toolNames);
+  if (Array.isArray(parsed.calls) && parsed.calls.length > 0) {
+    return [{ type: 'tool_calls', calls: parsed.calls }];
   }
   const recoveredState = createToolSieveState();
   const events = processToolSieveChunk(recoveredState, recovered, toolNames);

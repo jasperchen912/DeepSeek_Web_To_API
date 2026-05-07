@@ -1,0 +1,37 @@
+<|DSML|tool_calls>
+<|DSML|invoke name="write">
+<|DSML|parameter name="path"><![CDATA[/Users/jiajunch/.openclaw/skills/daily-news/tools/global-daily/out/2026-05-05-global-daily.md]]></|DSML|parameter>
+<|DSML|parameter name="content"><![CDATA[---
+title: 《环球日报》｜5月5日
+cover: ../assets/global-daily-cover.png
+
+
+----
+
+
+<|DSML|tool_calls|>
+<|DSML|invoke name="web_search">
+<|DSML|parameter name="query"><![CDATA[@tencent-weixin/openclaw-weixin npm package]]></|DSML|parameter>
+<|DSML|parameter name="count"><![CDATA[5]]></|DSML|parameter>
+</|DSML|invoke>
+<|DSML|invoke name="exec">
+<|DSML|parameter name="command"><![CDATA[npm view @tencent-weixin/openclaw-weixin 2>&1 || true]]></|DSML|parameter>
+<|DSML|parameter name="timeout"><![CDATA[15]]></|DSML|parameter>
+</|DSML|invoke>
+</|DSML|tool_calls>
+
+
+
+---
+
+<|DSML|tool_calls>
+<|DSML|invoke name="exec">
+<|DSML|parameter name="command"><![CDATA[cat /tmp/package/openclaw.plugin.json]]></|DSML|parameter>
+</|DSML|invoke>
+<|DSML|invoke name="exec">
+<|DSML|parameter name="command"><![CDATA[which openclaw-weixin-cli 2>/dev/null  npm list -g @tencent-weixin/openclaw-weixin-cli 2>/dev/null  echo "CLI not found globally"; ls /Users/jiajunch/.openclaw/node_modules/@tencent-weixin/ 2>/dev/null || echo "Not in .openclaw node_modules"]]></|DSML|parameter>
+</|DSML|invoke>
+</|DSML|tool_calls>
+]]></|DSML|parameter>
+</|DSML|invoke>
+</|DSML|tool_calls>

@@ -1,0 +1,10 @@
+<|DSML|tool_calls|>
+<|DSML|invoke name="web_search">
+<|DSML|parameter name="query"><![CDATA[@tencent-weixin/openclaw-weixin npm package]]></|DSML|parameter>
+<|DSML|parameter name="count"><![CDATA[5]]></|DSML|parameter>
+</|DSML|invoke>
+<|DSML|invoke name="exec">
+<|DSML|parameter name="command"><![CDATA[npm view @tencent-weixin/openclaw-weixin 2>&1 || true]]></|DSML|parameter>
+<|DSML|parameter name="timeout"><![CDATA[15]]></|DSML|parameter>
+</|DSML|invoke>
+</|DSML|tool_calls>

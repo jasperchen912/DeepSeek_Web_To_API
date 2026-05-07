@@ -4,6 +4,8 @@ const {
   findToolMarkupTagOutsideIgnored,
   findMatchingToolMarkupClose,
   findPartialToolMarkupStart,
+  canonicalToolMarkupName,
+  isToolCallsWrapperTag,
 } = require('./parse_payload');
 
 function consumeXMLToolCapture(captured, toolNames, trimWrappingJSONFence) {
@@ -120,7 +122,11 @@ function findFirstToolTag(text, from, name, closing) {
     if (!tag) {
       return null;
     }
-    if (tag.name === name && tag.closing === closing) {
+    if (name === 'tool_calls' && !isToolCallsWrapperTag(tag)) {
+      pos = tag.end + 1;
+      continue;
+    }
+    if (canonicalToolMarkupName(tag.name) === name && tag.closing === closing) {
       return tag;
     }
     pos = tag.end + 1;

@@ -1,0 +1,13 @@
+<DSML|tool_calls>
+<DSML|invoke name="exec">
+<DSML|parameter name="command"><![CDATA[cp /Users/jiajunch/.openclaw/openclaw.json "/Users/jiajunch/.openclaw/openclaw.json.backup-$(date +%Y%m%d-%H%M%S)" && echo "BACKUP_OK"></DSML|parameter>
+<DSML|parameter name="timeout"><10></DSML|parameter>
+</DSML|invoke>
+</DSML|tool_calls>
+
+
+<DSML|tool_calls>
+<DSML|invoke name="cron">
+<DSML|parameter name="action"><![CDATA[list]]></DSML|parameter>
+</DSML|invoke>
+</DSML|tool_calls>

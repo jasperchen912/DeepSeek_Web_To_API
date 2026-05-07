@@ -14,6 +14,9 @@ type ToolCallParseResult struct {
 	SawToolCallSyntax bool
 	RejectedByPolicy  bool
 	RejectedToolNames []string
+	Repaired          bool
+	Variant           string
+	RejectReason      string
 }
 
 func ParseToolCalls(text string, availableToolNames []string) []ParsedToolCall {
@@ -51,12 +54,25 @@ func parseToolCallsDetailedXMLOnly(text string) ToolCallParseResult {
 	result := ToolCallParseResult{}
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
+		result.RejectReason = "empty_input"
 		return result
 	}
 	result.SawToolCallSyntax = looksLikeToolCallSyntax(trimmed)
+	result.Variant = classifyToolCallVariant(trimmed)
+	if !result.SawToolCallSyntax {
+		result.RejectReason = "no_tool_call_wrapper"
+		return result
+	}
 	trimmed = stripFencedCodeBlocks(trimmed)
 	trimmed = strings.TrimSpace(trimmed)
 	if trimmed == "" {
+		result.Variant = "fenced_tool_call_example"
+		result.RejectReason = "no_tool_call_outside_fence"
+		return result
+	}
+	if !looksLikeToolCallSyntax(trimmed) {
+		result.Variant = "fenced_tool_call_example"
+		result.RejectReason = "no_tool_call_outside_fence"
 		return result
 	}
 
@@ -67,21 +83,36 @@ func parseToolCallsDetailedXMLOnly(text string) ToolCallParseResult {
 	if containsLooseCDATAOpening(trimmed) {
 		if repaired := SanitizeLooseCDATA(trimmed); repaired != trimmed {
 			trimmed = repaired
+			result.Repaired = true
+			result.Variant = withRepairVariant(result.Variant, "loose_cdata")
 		}
 	}
 
 	normalized, ok := normalizeDSMLToolCallMarkup(trimmed)
 	if !ok {
+		result.RejectReason = "normalize_failed"
 		return result
 	}
-	parsed := parseXMLToolCalls(normalized)
+	xmlParsed := parseXMLToolCallsWithMetadata(normalized)
+	parsed := xmlParsed.Calls
+	if xmlParsed.Repaired {
+		result.Repaired = true
+		result.Variant = withRepairVariant(result.Variant, xmlParsed.RepairKind)
+	}
 	if len(parsed) == 0 && containsLooseCDATAOpening(normalized) {
 		recovered := SanitizeLooseCDATA(normalized)
 		if recovered != normalized {
-			parsed = parseXMLToolCalls(recovered)
+			xmlParsed = parseXMLToolCallsWithMetadata(recovered)
+			parsed = xmlParsed.Calls
+			result.Repaired = true
+			result.Variant = withRepairVariant(result.Variant, "loose_cdata")
+			if xmlParsed.Repaired {
+				result.Variant = withRepairVariant(result.Variant, xmlParsed.RepairKind)
+			}
 		}
 	}
 	if len(parsed) == 0 {
+		result.RejectReason = "parse_failed"
 		return result
 	}
 
@@ -90,7 +121,44 @@ func parseToolCallsDetailedXMLOnly(text string) ToolCallParseResult {
 	result.Calls = calls
 	result.RejectedToolNames = rejectedNames
 	result.RejectedByPolicy = len(rejectedNames) > 0 && len(calls) == 0
+	switch {
+	case result.RejectedByPolicy:
+		result.RejectReason = "policy_rejected"
+	case len(calls) == 0:
+		result.RejectReason = "empty_arguments"
+	default:
+		result.RejectReason = ""
+	}
 	return result
+}
+
+func classifyToolCallVariant(text string) string {
+	hasDSML, hasCanonical := ContainsToolMarkupSyntaxOutsideIgnored(text)
+	switch {
+	case hasDSML && hasCanonical:
+		return "mixed_dsml_xml"
+	case hasDSML:
+		return "dsml"
+	case hasCanonical:
+		return "canonical_xml"
+	default:
+		return "unknown"
+	}
+}
+
+func withRepairVariant(base, repair string) string {
+	repair = strings.TrimSpace(repair)
+	if repair == "" {
+		return base
+	}
+	base = strings.TrimSpace(base)
+	if base == "" || base == "unknown" {
+		return "repaired_" + repair
+	}
+	if strings.Contains(base, "repaired_"+repair) {
+		return base
+	}
+	return base + "+repaired_" + repair
 }
 
 func filterToolCallsDetailed(parsed []ParsedToolCall) ([]ParsedToolCall, []string) {

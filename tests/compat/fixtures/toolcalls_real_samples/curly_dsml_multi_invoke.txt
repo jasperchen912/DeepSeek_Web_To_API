@@ -1,0 +1,10 @@
+<{:DSML}tool_calls>
+<{:DSML}invoke name="process">
+<{:DSML}parameter name="action"><![CDATA[poll]]></{:DSML}parameter>
+<{:DSML}parameter name="sessionId"><![CDATA[glow-seaslug]]></{:DSML}parameter>
+<{:DSML}parameter name="timeout"><![CDATA[10000]]></{:DSML}parameter>
+</{:DSML}invoke>
+<{:DSML}invoke name="exec">
+<{:DSML}parameter name="command"><![CDATA[find /Users/jiajunch -maxdepth 6 -type d -iname "ds2api" 2>/dev/null; find /Users/jiajunch -maxdepth 6 -type d -iname "deepseekapi*" 2>/dev/null; find /Users/jiajunch -maxdepth 6 -type f -iname "ds2api" 2>/dev/null]]></{:DSML}parameter>
+</{:DSML}invoke>
+</{:DSML}tool_calls>

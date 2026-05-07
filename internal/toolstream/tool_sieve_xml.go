@@ -30,7 +30,7 @@ func consumeXMLToolCapture(captured string, toolNames []string) (prefix string, 
 		if !ok {
 			break
 		}
-		if tag.Closing || tag.Name != "tool_calls" {
+		if tag.Closing || !toolcall.IsToolCallsWrapperTag(tag) {
 			searchFrom = tag.End + 1
 			continue
 		}
@@ -105,7 +105,7 @@ func hasOpenXMLToolTag(captured string) bool {
 		if !ok {
 			return false
 		}
-		if tag.Closing || tag.Name != "tool_calls" {
+		if tag.Closing || !toolcall.IsToolCallsWrapperTag(tag) {
 			searchFrom = tag.End + 1
 			continue
 		}

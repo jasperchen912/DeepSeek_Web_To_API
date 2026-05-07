@@ -218,6 +218,9 @@ func (s *responsesStreamRuntime) logToolPolicyRejections(textParsed toolcall.Too
 			"channel", channel,
 			"tool_choice_mode", s.toolChoice.Mode,
 			"rejected_tool_names", strings.Join(rejected, ","),
+			"tool_call_variant", parsed.Variant,
+			"tool_call_repaired", parsed.Repaired,
+			"tool_call_reject_reason", parsed.RejectReason,
 		)
 	}
 	logRejected(textParsed, "text")

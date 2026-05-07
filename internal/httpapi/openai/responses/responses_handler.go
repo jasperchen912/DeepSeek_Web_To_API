@@ -293,6 +293,9 @@ func logResponsesToolPolicyRejection(traceID string, policy promptcompat.ToolCho
 		"channel", channel,
 		"tool_choice_mode", policy.Mode,
 		"rejected_tool_names", strings.Join(rejected, ","),
+		"tool_call_variant", parsed.Variant,
+		"tool_call_repaired", parsed.Repaired,
+		"tool_call_reject_reason", parsed.RejectReason,
 	)
 }
 

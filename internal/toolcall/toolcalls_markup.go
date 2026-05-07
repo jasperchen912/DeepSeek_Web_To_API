@@ -377,7 +377,7 @@ func findUnclosedCDATAParameterClose(text string, from int) int {
 		if !ok {
 			continue
 		}
-		if tag.Closing && tag.Name == "parameter" {
+		if tag.Closing && canonicalToolMarkupName(tag.Name) == "parameter" {
 			return i - from
 		}
 		i = tag.End
@@ -398,7 +398,7 @@ func findMissingLTCDATAParameterClose(text string, from int) int {
 		if !ok {
 			continue
 		}
-		if tag.Closing && tag.Name == "parameter" {
+		if tag.Closing && canonicalToolMarkupName(tag.Name) == "parameter" {
 			return i - from
 		}
 	}

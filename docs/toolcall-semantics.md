@@ -116,7 +116,9 @@ Render-->>Client: protocol-native tool event
 </|DSML|tool_calls>
 ```
 
-兼容层也接受旧式 XML、常见 DSML wrapper typo、全角竖线、全角 `＞` 标签/CDATA 终止符、零宽字符/`▁` 分隔符、折行闭合标签、参数 JSON 字面量和可恢复的 CDATA 漏闭合。CDATA 修复覆盖 `]]<TAG`、缺少 `]]` 或缺少紧邻参数闭合标签前 `<` 的窄场景，并会继续筛分同一 flush 中后续的工具块，避免后续 DSML 块作为普通文本泄漏。裸 `<invoke>` 不作为稳定支持格式。
+兼容层也接受旧式 XML、常见 DSML wrapper typo、中文 wrapper 别名、全角竖线、全角 `＞` 标签/CDATA 终止符、零宽字符/`▁` 分隔符、折行闭合标签、参数 JSON 字面量、`<10>` 这类 angle-wrapped JSON scalar 和可恢复的 CDATA 漏闭合。DSML wrapper 还支持有界模糊匹配：只在单个标签头内允许 `DSML` 与 `tool_calls` 之间出现空白、竖线、零宽字符、`▁`、重复 `DSML` 或 `{:DSML}` 这类已知噪声。CDATA 修复覆盖 `]]<TAG`、缺少 `]]` 或缺少紧邻参数闭合标签前 `<` 的窄场景；当 `content` 这类字符串参数里嵌入带 CDATA 的 DSML 样例时，外层参数仍按一个 opaque 字符串处理，不把内层 tool block 提升为顶层调用。flush 修复会复用同一套非流式解析语义，继续筛分同一 flush 中后续的工具块，避免后续 DSML 块作为普通文本泄漏。裸 `<invoke>` 不作为稳定支持格式。
+
+解析路径固定为 `Detect -> Normalize -> Repair -> Parse`。Detect 只接受带 wrapper 的高置信候选；Normalize 将 DSML/XML 别名转为 canonical XML；Repair 只处理 CDATA 漏闭合、强证据缺 opening wrapper 等窄场景；Parse 生成内部 `ParsedToolCall` 后再渲染到 OpenAI Chat Completions 或 Responses。`ToolCallParseResult` 会暴露 `Variant`、`Repaired` 和 `RejectReason`，用于定位新变体、修复命中和低置信拒绝。
 
 ### 早发和最终修复
 
@@ -144,7 +146,7 @@ Render-->>Client: protocol-native tool event
 
 ## 结论
 
-工具调用兼容的原则是：输入侧容错、输出侧结构化、流式侧防泄漏。新增工具格式时，应同时补 Go 解析、Node sieve 对齐测试和协议渲染测试。
+工具调用兼容的原则是：输入侧保守容错、输出侧结构化、流式侧防泄漏。新增工具格式时，应先加入变体 fixture 或真实样本 corpus；如果现有归一化已覆盖，只补测试；如果是结构性新格式，再补窄规则，并同步 Go 解析、Node sieve 对齐测试和协议渲染测试。
 
 **章节来源**
 - [internal/toolcall/regression_test.go](file://internal/toolcall/regression_test.go)

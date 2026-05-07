@@ -1,0 +1,38 @@
+<DSML|tool_calls>
+<DSML|invoke name="exec">
+<DSML|parameter name="command"><**![CDATA[python3 << 'PYEOF'
+import json
+
+PATH = "/Users/jiajunch/.openclaw/openclaw.json"
+
+with open(PATH, "r") as f:
+c = json.load(f)
+
+agents = c.setdefault("agents", {}).setdefault("list", [])
+targets = {"main", "red"}
+updated = 0
+
+for agent in agents:
+if agent.get("id") in targets:
+old = agent.setdefault("model", {}).get("primary", "(none)")
+agent["model"]["primary"] = "me/deepseek-v4-pro"
+print(f"  {agent['id']}: {old} → me/deepseek-v4-pro")
+updated += 1
+
+if updated == 0:
+print("No matching agents found.")
+else:
+with open(PATH, "w") as f:
+json.dump(c, f, indent=2, ensure_ascii=False)
+print(f"\nDone. Updated {updated} agent(s).")
+
+Also show full current model assignments
+
+print("\nAll agent model assignments:")
+for agent in agents:
+model = agent.get("model", {}).get("primary", "(inherit defaults)")
+print(f"  {agent['id']:20s} → {model}")
+PYEOF**></DSML|parameter>
+<DSML|parameter name="timeout"><10></DSML|parameter>
+</DSML|invoke>
+</DSML|tool_calls>

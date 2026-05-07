@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   extractToolNames,
@@ -31,6 +33,33 @@ function collectText(events) {
     .join('');
 }
 
+const realSampleDir = path.resolve(__dirname, '../compat/fixtures/toolcalls_real_samples');
+
+function readRealSample(name) {
+  return fs.readFileSync(path.join(realSampleDir, `${name}.txt`), 'utf8');
+}
+
+function chunkString(s) {
+  const sizes = [1, 2, 5, 13, 37, 89];
+  const chunks = [];
+  for (let pos = 0, n = 0; pos < s.length; n += 1) {
+    const end = Math.min(s.length, pos + sizes[n % sizes.length]);
+    chunks.push(s.slice(pos, end));
+    pos = end;
+  }
+  return chunks;
+}
+
+function collectToolCalls(events) {
+  return events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+}
+
+function assertNoTextLeak(text, forbidden) {
+  for (const value of forbidden) {
+    assert.equal(text.includes(value), false, `text leaked ${JSON.stringify(value)}: ${text}`);
+  }
+}
+
 test('extractToolNames keeps only declared tool names (Go parity)', () => {
   const names = extractToolNames([
     { function: { description: 'no name tool' } },
@@ -55,6 +84,142 @@ test('parseToolCalls parses DSML shell as XML-compatible tool call', () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].name, 'read_file');
   assert.deepEqual(calls[0].input, { path: 'README.MD' });
+});
+
+test('parseToolCallsDetailed exposes conservative variant metadata', () => {
+  const payload = '<|DSMLtool_calls><|DSMLinvoke name="Bash"><|DSMLparameter name="command"><![CDATA[pwd]]></|DSMLparameter></|DSMLinvoke></|DSMLtool_calls>';
+  const parsed = parseToolCallsDetailed(payload, ['Bash']);
+  assert.equal(parsed.calls.length, 1);
+  assert.equal(parsed.variant, 'dsml');
+  assert.equal(parsed.repaired, false);
+  assert.equal(parsed.rejectReason, '');
+
+  const lowConfidence = parseToolCallsDetailed('<invoke name="Bash"></invoke>', ['Bash']);
+  assert.equal(lowConfidence.calls.length, 0);
+  assert.equal(lowConfidence.rejectReason, 'no_tool_call_wrapper');
+
+  const singular = parseToolCallsDetailed('<tool_call><invoke name="Bash"></invoke></tool_call>', ['Bash']);
+  assert.equal(singular.calls.length, 0);
+  assert.equal(singular.rejectReason, 'no_tool_call_wrapper');
+
+  const repaired = parseToolCallsDetailed('<|DSMLtool_calls><|DSMLinvoke name="Bash"><|DSMLparameter name="command"><![CDATA[id]]</|DSMLparameter></|DSMLinvoke></|DSMLtool_calls>', ['Bash']);
+  assert.equal(repaired.calls.length, 1);
+  assert.equal(repaired.repaired, true);
+  assert.equal(repaired.variant, 'dsml+repaired_loose_cdata');
+});
+
+test('parseToolCalls parses real DSML sample corpus', () => {
+  const cases = [
+    {
+      name: 'curly_dsml_multi_invoke',
+      names: ['process', 'exec'],
+      variant: 'dsml',
+      repaired: false,
+      assertCalls(calls) {
+        assert.equal(calls[0].input.action, 'poll');
+        assert.equal(calls[0].input.sessionId, 'glow-seaslug');
+        assert.equal(calls[0].input.timeout, 10000);
+        assert.equal(calls[1].input.command.includes('find /Users/jiajunch'), true);
+      },
+    },
+    {
+      name: 'markdown_corrupted_python_cdata',
+      names: ['exec'],
+      variant: 'dsml+repaired_loose_cdata',
+      repaired: true,
+      assertCalls(calls) {
+        assert.equal(calls[0].input.command.includes("python3 << 'PYEOF'"), true);
+        assert.equal(calls[0].input.command.includes('me/deepseek-v4-pro'), true);
+        assert.equal(calls[0].input.command.includes('CDATA'), false);
+        assert.equal(calls[0].input.timeout, 10);
+      },
+    },
+    {
+      name: 'nested_dsml_in_write_content',
+      names: ['write'],
+      variant: 'dsml',
+      repaired: false,
+      assertCalls(calls) {
+        assert.equal(calls[0].input.path, '/Users/jiajunch/.openclaw/skills/daily-news/tools/global-daily/out/2026-05-05-global-daily.md');
+        assert.equal(calls[0].input.content.includes('<|DSML|tool_calls|>'), true);
+        assert.equal(calls[0].input.content.includes('@tencent-weixin/openclaw-weixin npm package'), true);
+        assert.equal(calls[0].input.content.includes('openclaw-weixin-cli'), true);
+      },
+    },
+    {
+      name: 'trailing_pipe_openclaw_lookup',
+      names: ['web_search', 'exec'],
+      variant: 'dsml',
+      repaired: false,
+      assertCalls(calls) {
+        assert.equal(calls[0].input.query, '@tencent-weixin/openclaw-weixin npm package');
+        assert.equal(calls[0].input.count, 5);
+        assert.equal(calls[1].input.command.includes('npm view @tencent-weixin/openclaw-weixin'), true);
+        assert.equal(calls[1].input.timeout, 15);
+      },
+    },
+    {
+      name: 'unclosed_cdata_then_cron',
+      names: ['exec', 'cron'],
+      variant: 'dsml+repaired_loose_cdata',
+      repaired: true,
+      assertCalls(calls) {
+        assert.equal(calls[0].input.command.includes('BACKUP_OK'), true);
+        assert.equal(calls[0].input.command.includes('DSML'), false);
+        assert.equal(calls[1].input.action, 'list');
+      },
+    },
+    {
+      name: 'zero_width_fullwidth_multi_search',
+      names: ['web_search', 'web_search', 'web_search'],
+      variant: 'dsml',
+      repaired: false,
+      assertCalls(calls) {
+        assert.equal(calls[0].input.count, 8);
+        assert.equal(calls[0].input.query.includes('Chiang Mai cheapest international schools'), true);
+        assert.equal(calls[1].input.query.includes('Spain public school quality ranking'), true);
+        assert.equal(calls[2].input.query.includes('Portugal public school digital nomad children'), true);
+      },
+    },
+  ];
+
+  for (const c of cases) {
+    const parsed = parseToolCallsDetailed(readRealSample(c.name), []);
+    assert.deepEqual(parsed.calls.map((call) => call.name), c.names, `${c.name}: names`);
+    assert.equal(parsed.variant, c.variant, `${c.name}: variant`);
+    assert.equal(parsed.repaired, c.repaired, `${c.name}: repaired`);
+    assert.equal(parsed.rejectReason, '', `${c.name}: rejectReason`);
+    c.assertCalls(parsed.calls);
+  }
+});
+
+test('parseToolCalls tolerates Chinese DSML wrapper alias', () => {
+  const payload = '<|DSML工具调用|><|DSML|invoke name="Bash"><|DSML|parameter name="command">id</|DSML|parameter></|DSML|invoke></|DSML|tool_calls>';
+  const calls = parseToolCalls(payload, ['Bash']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'Bash');
+  assert.deepEqual(calls[0].input, { command: 'id' });
+});
+
+test('parseToolCalls tolerates curly DSML prefix variant', () => {
+  const payload = '<{:DSML}tool_calls><{:DSML}invoke name="process"><{:DSML}parameter name="action">poll</{:DSML}parameter></{:DSML}invoke></{:DSML}tool_calls>';
+  const calls = parseToolCalls(payload, ['process']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'process');
+  assert.deepEqual(calls[0].input, { action: 'poll' });
+});
+
+test('parseToolCalls tolerates bounded fuzzy DSML wrapper noise', () => {
+  const payload = '<\u200dDSML \u2581 | tool_calls data-x="1"><invoke name="read_file"><parameter name="path">README.md</parameter></invoke>< / DSML \u2581 | tool_calls >';
+  const calls = parseToolCalls(payload, ['read_file']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'read_file');
+  assert.deepEqual(calls[0].input, { path: 'README.md' });
+});
+
+test('parseToolCalls rejects low-confidence fuzzy lookalikes', () => {
+  assert.equal(parseToolCalls('<note data="DSML | tool_calls"><invoke name="read_file"></invoke></note>', ['read_file']).length, 0);
+  assert.equal(parseToolCalls('<abcDSML_tool_calls><invoke name="read_file"></invoke></abcDSML_tool_calls>', ['read_file']).length, 0);
 });
 
 test('parseToolCalls tolerates tokenized DSML prefix separators', () => {
@@ -397,6 +562,100 @@ test('sieve emits tool_calls for DSML space-separator typo', () => {
   assert.equal(finalCalls[0].input.file_path, '/tmp/input.txt');
   assert.equal(text.includes('准备读取文件'), true);
   assert.equal(text.includes('<|DSML invoke'), false);
+});
+
+test('sieve emits tool_calls for Chinese DSML wrapper alias', () => {
+  const events = runSieve([
+    '准备执行。\n',
+    '<|DSML工具调用|>\n',
+    '<|DSML|invoke name="Bash">\n',
+    '<|DSML|parameter name="command">id</|DSML|parameter>\n',
+    '</|DSML|invoke>\n',
+    '</|DSML|tool_calls>',
+  ], ['Bash']);
+  const text = collectText(events);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  assert.equal(finalCalls.length, 1);
+  assert.equal(finalCalls[0].name, 'Bash');
+  assert.equal(finalCalls[0].input.command, 'id');
+  assert.equal(text.includes('准备执行'), true);
+  assert.equal(text.includes('工具调用'), false);
+});
+
+test('sieve emits tool_calls for bounded fuzzy DSML wrapper across chunks', () => {
+  const events = runSieve([
+    '准备读取。\n',
+    '<\u200dDS',
+    'ML \u2581 | tool_calls>\n',
+    '<invoke name="read_file"><parameter name="path">README.md</parameter></invoke>\n',
+    '< / DSML \u2581 | tool_calls >',
+  ], ['read_file']);
+  const text = collectText(events);
+  const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
+  assert.equal(finalCalls.length, 1);
+  assert.equal(finalCalls[0].name, 'read_file');
+  assert.equal(finalCalls[0].input.path, 'README.md');
+  assert.equal(text.includes('准备读取'), true);
+  assert.equal(text.toLowerCase().includes('dsml'), false);
+  assert.equal(text.includes('tool_calls'), false);
+});
+
+test('sieve emits real DSML sample corpus without leaking tool text', () => {
+  const cases = [
+    {
+      name: 'markdown_corrupted_python_cdata',
+      names: ['exec'],
+      forbidden: ['DSML', 'python3', 'me/deepseek-v4-pro'],
+      assertCalls(calls) {
+        assert.equal(calls[0].input.command.includes('me/deepseek-v4-pro'), true);
+        assert.equal(calls[0].input.command.includes('CDATA'), false);
+      },
+    },
+    {
+      name: 'nested_dsml_in_write_content',
+      names: ['write'],
+      forbidden: ['DSML', 'global-daily', 'openclaw-weixin'],
+      assertCalls(calls) {
+        assert.equal(calls[0].input.content.includes('<|DSML|tool_calls|>'), true);
+        assert.equal(calls[0].input.content.includes('openclaw-weixin-cli'), true);
+      },
+    },
+    {
+      name: 'trailing_pipe_openclaw_lookup',
+      names: ['web_search', 'exec'],
+      forbidden: ['DSML', 'openclaw-weixin', 'npm view'],
+      assertCalls(calls) {
+        assert.equal(calls[0].input.query, '@tencent-weixin/openclaw-weixin npm package');
+        assert.equal(calls[1].input.command.includes('npm view @tencent-weixin/openclaw-weixin'), true);
+      },
+    },
+    {
+      name: 'unclosed_cdata_then_cron',
+      names: ['exec', 'cron'],
+      forbidden: ['DSML', 'BACKUP_OK', 'cron'],
+      assertCalls(calls) {
+        assert.equal(calls[0].input.command.includes('BACKUP_OK'), true);
+        assert.equal(calls[1].input.action, 'list');
+      },
+    },
+    {
+      name: 'zero_width_fullwidth_multi_search',
+      names: ['web_search', 'web_search', 'web_search'],
+      forbidden: ['DSML', 'tool_calls', 'Chiang Mai'],
+      assertCalls(calls) {
+        assert.equal(calls[0].input.query.includes('Chiang Mai cheapest international schools'), true);
+        assert.equal(calls[2].input.query.includes('Portugal public school digital nomad children'), true);
+      },
+    },
+  ];
+
+  for (const c of cases) {
+    const events = runSieve(chunkString(readRealSample(c.name)), []);
+    const calls = collectToolCalls(events);
+    assert.deepEqual(calls.map((call) => call.name), c.names, `${c.name}: names`);
+    assertNoTextLeak(collectText(events), c.forbidden);
+    c.assertCalls(calls);
+  }
 });
 
 test('sieve emits tool_calls for DSML trailing pipe tag terminator', () => {
