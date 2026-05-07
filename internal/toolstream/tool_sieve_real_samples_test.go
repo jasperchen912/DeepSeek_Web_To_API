@@ -43,6 +43,18 @@ func TestSieveRealSampleCorpusDoesNotLeak(t *testing.T) {
 			},
 		},
 		{
+			name:          "structured_edits_unclosed_nested_cdata",
+			wantNames:     []string{"edit", "edit", "cron"},
+			forbiddenText: []string{"DSML", "Heartbeat v1", "MEMORY.md"},
+			assert: func(t *testing.T, calls []toolcall.ParsedToolCall) {
+				requireSieveStringArg(t, calls[0], "path", "/Users/jiajunch/.openclaw/workspace/MEMORY.md")
+				requireSieveStringArg(t, calls[1], "path", "/Users/jiajunch/.openclaw/workspace/MEMORY.md")
+				requireSieveEditTextContains(t, calls[0], 0, "newText", "Heartbeat v1 方案撤销")
+				requireSieveEditTextContains(t, calls[1], 0, "newText", "预算 <800 tokens。")
+				requireSieveStringArg(t, calls[2], "action", "list")
+			},
+		},
+		{
 			name:          "unclosed_cdata_then_cron",
 			wantNames:     []string{"exec", "cron"},
 			forbiddenText: []string{"DSML", "BACKUP_OK", "cron"},
@@ -157,5 +169,21 @@ func requireSieveArgNotContains(t *testing.T, call toolcall.ParsedToolCall, key,
 	got, ok := call.Input[key].(string)
 	if !ok || strings.Contains(got, needle) {
 		t.Fatalf("%s.%s: expected string without %q, got %#v", call.Name, key, needle, call.Input[key])
+	}
+}
+
+func requireSieveEditTextContains(t *testing.T, call toolcall.ParsedToolCall, idx int, key, needle string) {
+	t.Helper()
+	edits, ok := call.Input["edits"].([]any)
+	if !ok || idx < 0 || idx >= len(edits) {
+		t.Fatalf("%s.edits: expected edit at index %d, got %#v", call.Name, idx, call.Input["edits"])
+	}
+	edit, ok := edits[idx].(map[string]any)
+	if !ok {
+		t.Fatalf("%s.edits[%d]: expected object, got %#v", call.Name, idx, edits[idx])
+	}
+	got, ok := edit[key].(string)
+	if !ok || !strings.Contains(got, needle) {
+		t.Fatalf("%s.edits[%d].%s: expected string containing %q, got %#v", call.Name, idx, key, needle, edit[key])
 	}
 }

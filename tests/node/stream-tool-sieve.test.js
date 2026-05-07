@@ -159,6 +159,21 @@ test('parseToolCalls parses real DSML sample corpus', () => {
       },
     },
     {
+      name: 'structured_edits_unclosed_nested_cdata',
+      names: ['edit', 'edit', 'cron'],
+      variant: 'dsml+repaired_loose_cdata',
+      repaired: true,
+      assertCalls(calls) {
+        assert.equal(calls[0].input.path, '/Users/jiajunch/.openclaw/workspace/MEMORY.md');
+        assert.equal(calls[1].input.path, '/Users/jiajunch/.openclaw/workspace/MEMORY.md');
+        assert.equal(calls[0].input.edits[0].newText.includes('Heartbeat v1 方案撤销'), true);
+        assert.equal(calls[0].input.edits[0].oldText.includes('确立 Heartbeat 设计 v1'), true);
+        assert.equal(calls[1].input.edits[0].newText.includes('预算 <800 tokens。'), true);
+        assert.equal(calls[1].input.edits[0].oldText.includes('预算 <800 tokens。'), true);
+        assert.equal(calls[2].input.action, 'list');
+      },
+    },
+    {
       name: 'unclosed_cdata_then_cron',
       names: ['exec', 'cron'],
       variant: 'dsml+repaired_loose_cdata',
@@ -627,6 +642,18 @@ test('sieve emits real DSML sample corpus without leaking tool text', () => {
       assertCalls(calls) {
         assert.equal(calls[0].input.query, '@tencent-weixin/openclaw-weixin npm package');
         assert.equal(calls[1].input.command.includes('npm view @tencent-weixin/openclaw-weixin'), true);
+      },
+    },
+    {
+      name: 'structured_edits_unclosed_nested_cdata',
+      names: ['edit', 'edit', 'cron'],
+      forbidden: ['DSML', 'Heartbeat v1', 'MEMORY.md'],
+      assertCalls(calls) {
+        assert.equal(calls[0].input.path, '/Users/jiajunch/.openclaw/workspace/MEMORY.md');
+        assert.equal(calls[1].input.path, '/Users/jiajunch/.openclaw/workspace/MEMORY.md');
+        assert.equal(calls[0].input.edits[0].newText.includes('Heartbeat v1 方案撤销'), true);
+        assert.equal(calls[1].input.edits[0].newText.includes('预算 <800 tokens。'), true);
+        assert.equal(calls[2].input.action, 'list');
       },
     },
     {

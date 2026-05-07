@@ -123,7 +123,7 @@ Chat Completions 的最终响应和流式结束块会返回标准 OpenAI token �
 
 流式 Chat Completions 与 Responses 在请求声明 OpenAI `tools` 时会启用 tool sieve；如果没有显式 `tools`，但最终 prompt 中已经存在 DSML/XML tool-call wrapper（例如第三方客户端自行注入的 `<DSML|tool_calls>` 工具协议），流式层同样会缓冲并解析这些工具块。缓冲解析会兼容全角竖线、`▁` 分隔符、中文 wrapper 别名、有界模糊 DSML wrapper、全角 `＞` 终止符和参数内嵌 DSML/CDATA 内容等常见 DSML 变体，避免拆分 chunk 时把 DSML 标签作为普通 assistant 文本发给下游 channel。
 
-Tool-call 输出按 `Detect -> Normalize -> Repair -> Parse` 处理：先确认存在高置信 wrapper，再把 DSML/XML 别名归一化为内部 `ParsedToolCall`，只对 CDATA 漏闭合、参数 JSON scalar 包裹或缺少 opening wrapper 这类窄场景修复，最后渲染为 OpenAI `tool_calls` / Responses `function_call`。有界模糊匹配只在单个标签头内允许 DSML 与 `tool_calls` 之间出现已知分隔噪声，不扫描属性值或跨标签内容。解析结果会带上 `variant`、`repaired` 和 `reject_reason` 诊断信息；裸 `<invoke>` 或低置信未知结构不会被自动转成工具调用。
+Tool-call 输出按 `Detect -> Normalize -> Repair -> Parse` 处理：先确认存在高置信 wrapper，再把 DSML/XML 别名归一化为内部 `ParsedToolCall`，只对 CDATA 漏闭合、结构化参数内部明确 closing tag 前漏掉 CDATA 结尾、参数 JSON scalar 包裹或缺少 opening wrapper 这类窄场景修复，最后渲染为 OpenAI `tool_calls` / Responses `function_call`。有界模糊匹配只在单个标签头内允许 DSML 与 `tool_calls` 之间出现已知分隔噪声，不扫描属性值或跨标签内容。解析结果会带上 `variant`、`repaired` 和 `reject_reason` 诊断信息；裸 `<invoke>` 或低置信未知结构不会被自动转成工具调用。
 
 ### Claude Messages
 

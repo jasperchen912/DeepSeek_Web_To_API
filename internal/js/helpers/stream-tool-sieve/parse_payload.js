@@ -1562,12 +1562,13 @@ function sanitizeLooseCDATA(text) {
     const markdownRel = findMarkdownCDATAClose(raw, contentStart);
     const nestedOpenAbs = lower.indexOf(openMarker, contentStart);
     const nestedOpenRel = nestedOpenAbs >= 0 ? nestedOpenAbs - contentStart : -1;
+    const genericCloseRel = findUnclosedCDATAGenericClose(raw, contentStart);
     const parameterCloseRel = findUnclosedCDATAParameterClose(raw, contentStart);
     const missingLTParameterCloseRel = findMissingLTCDATAParameterClose(raw, contentStart);
-    const earliestParameterCloseRel = minNonNegative(parameterCloseRel, missingLTParameterCloseRel);
+    const earliestTagCloseRel = minNonNegative(genericCloseRel, parameterCloseRel, missingLTParameterCloseRel);
     const effectiveProperRel = properRel >= 0 &&
       nestedOpenRel >= 0 && nestedOpenRel < properRel &&
-      earliestParameterCloseRel >= 0 && earliestParameterCloseRel < nestedOpenRel
+      earliestTagCloseRel >= 0 && earliestTagCloseRel < nestedOpenRel
       ? -1
       : properRel;
     if (effectiveProperRel >= 0) {
@@ -1581,7 +1582,7 @@ function sanitizeLooseCDATA(text) {
       pos = closePos + proper.len;
       continue;
     }
-    if (markdownRel >= 0 && earliestCandidate(markdownRel, parameterCloseRel, missingLTParameterCloseRel)) {
+    if (markdownRel >= 0 && earliestCandidate(markdownRel, genericCloseRel, parameterCloseRel, missingLTParameterCloseRel)) {
       const closePos = contentStart + markdownRel;
       changed = true;
       out += raw.slice(start, closePos) + closeMarker;
@@ -1592,6 +1593,13 @@ function sanitizeLooseCDATA(text) {
       if (pos < raw.length && (raw[pos] === '>' || raw[pos] === '＞')) {
         pos += 1;
       }
+      continue;
+    }
+    if (genericCloseRel >= 0 && earliestCandidate(genericCloseRel, parameterCloseRel, missingLTParameterCloseRel)) {
+      const closePos = contentStart + genericCloseRel;
+      changed = true;
+      out += raw.slice(start, closePos) + closeMarker;
+      pos = closePos;
       continue;
     }
     if (parameterCloseRel >= 0 && earliestCandidate(parameterCloseRel, missingLTParameterCloseRel)) {
@@ -1653,6 +1661,34 @@ function minNonNegative(...values) {
     }
   }
   return out;
+}
+
+function findUnclosedCDATAGenericClose(text, from) {
+  const raw = toRawString(text);
+  for (let i = Math.max(0, from || 0); i < raw.length;) {
+    const rel = raw.indexOf('</', i);
+    if (rel < 0) {
+      return -1;
+    }
+    const end = findXmlTagEnd(raw, rel + 1);
+    if (end < 0) {
+      return -1;
+    }
+    if (isSimpleXmlClosingTag(raw.slice(rel, end + 1))) {
+      return rel - from;
+    }
+    i = end + 1;
+  }
+  return -1;
+}
+
+function isSimpleXmlClosingTag(tag) {
+  const raw = toRawString(tag).trim();
+  if (raw.length < '</a>'.length || !raw.startsWith('</') || !raw.endsWith('>')) {
+    return false;
+  }
+  const name = raw.slice(2, -1).trim();
+  return /^[A-Za-z_][A-Za-z0-9_.:-]*$/.test(name);
 }
 
 function findUnclosedCDATAParameterClose(text, from) {

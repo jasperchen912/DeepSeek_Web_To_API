@@ -184,12 +184,13 @@ func SanitizeLooseCDATA(text string) string {
 		nestedOpenRel := strings.Index(lower[contentStart:], openMarker)
 		looseRel := findLooseCDATAClose(text, contentStart)
 		markdownRel := findMarkdownCDATAClose(text, contentStart)
+		genericCloseRel := findUnclosedCDATAGenericClose(text, contentStart)
 		parameterCloseRel := findUnclosedCDATAParameterClose(text, contentStart)
 		missingLTParameterCloseRel := findMissingLTCDATAParameterClose(text, contentStart)
-		earliestParameterCloseRel := minNonNegative(parameterCloseRel, missingLTParameterCloseRel)
+		earliestTagCloseRel := minNonNegative(genericCloseRel, parameterCloseRel, missingLTParameterCloseRel)
 		if properRel >= 0 &&
 			nestedOpenRel >= 0 && nestedOpenRel < properRel &&
-			earliestParameterCloseRel >= 0 && earliestParameterCloseRel < nestedOpenRel {
+			earliestTagCloseRel >= 0 && earliestTagCloseRel < nestedOpenRel {
 			properRel = -1
 		}
 
@@ -200,12 +201,15 @@ func SanitizeLooseCDATA(text string) string {
 		case properRel >= 0:
 			closePos = contentStart + properRel
 			closeKind = 1
-		case looseRel >= 0 && earliestCandidate(looseRel, markdownRel, parameterCloseRel, missingLTParameterCloseRel):
+		case looseRel >= 0 && earliestCandidate(looseRel, markdownRel, genericCloseRel, parameterCloseRel, missingLTParameterCloseRel):
 			closePos = contentStart + looseRel
 			closeKind = 2
-		case markdownRel >= 0 && earliestCandidate(markdownRel, parameterCloseRel, missingLTParameterCloseRel):
+		case markdownRel >= 0 && earliestCandidate(markdownRel, genericCloseRel, parameterCloseRel, missingLTParameterCloseRel):
 			closePos = contentStart + markdownRel
 			closeKind = 3
+		case genericCloseRel >= 0 && earliestCandidate(genericCloseRel, parameterCloseRel, missingLTParameterCloseRel):
+			closePos = contentStart + genericCloseRel
+			closeKind = 4
 		case parameterCloseRel >= 0 && earliestCandidate(parameterCloseRel, missingLTParameterCloseRel):
 			closePos = contentStart + parameterCloseRel
 			closeKind = 4
@@ -363,6 +367,53 @@ func isLikelyCDATAEndFollowerAt(text string, idx int) bool {
 		return false
 	}
 	return isLikelyTagStartAt(text, idx)
+}
+
+func findUnclosedCDATAGenericClose(text string, from int) int {
+	if from >= len(text) {
+		return -1
+	}
+	for i := from; i < len(text); {
+		rel := strings.Index(text[i:], "</")
+		if rel < 0 {
+			return -1
+		}
+		start := i + rel
+		end := findXMLTagEnd(text, start+1)
+		if end < 0 {
+			return -1
+		}
+		if isSimpleXMLClosingTag(text[start : end+1]) {
+			return start - from
+		}
+		i = end + 1
+	}
+	return -1
+}
+
+func isSimpleXMLClosingTag(tag string) bool {
+	trimmed := strings.TrimSpace(tag)
+	if len(trimmed) < len("</a>") || !strings.HasPrefix(trimmed, "</") {
+		return false
+	}
+	name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "</"), ">"))
+	if name == "" || strings.ContainsAny(name, " \t\r\n/<>") {
+		return false
+	}
+	for i, r := range name {
+		if i == 0 {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_' {
+				continue
+			}
+			return false
+		}
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' || r == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func findUnclosedCDATAParameterClose(text string, from int) int {

@@ -64,6 +64,21 @@ func TestParseToolCallsRealSampleCorpus(t *testing.T) {
 			},
 		},
 		{
+			name:         "structured_edits_unclosed_nested_cdata",
+			wantNames:    []string{"edit", "edit", "cron"},
+			wantVariant:  "dsml+repaired_loose_cdata",
+			wantRepaired: true,
+			assert: func(t *testing.T, result ToolCallParseResult) {
+				requireStringArg(t, result.Calls[0], "path", "/Users/jiajunch/.openclaw/workspace/MEMORY.md")
+				requireStringArg(t, result.Calls[1], "path", "/Users/jiajunch/.openclaw/workspace/MEMORY.md")
+				requireEditTextContains(t, result.Calls[0], 0, "newText", "Heartbeat v1 方案撤销")
+				requireEditTextContains(t, result.Calls[0], 0, "oldText", "确立 Heartbeat 设计 v1")
+				requireEditTextContains(t, result.Calls[1], 0, "newText", "预算 <800 tokens。")
+				requireEditTextContains(t, result.Calls[1], 0, "oldText", "预算 <800 tokens。")
+				requireStringArg(t, result.Calls[2], "action", "list")
+			},
+		},
+		{
 			name:         "unclosed_cdata_then_cron",
 			wantNames:    []string{"exec", "cron"},
 			wantVariant:  "dsml+repaired_loose_cdata",
@@ -164,4 +179,20 @@ func requireNumberArg(t *testing.T, call ParsedToolCall, key string, want float6
 		}
 	}
 	t.Fatalf("%s.%s: expected numeric %v, got %#v", call.Name, key, want, call.Input[key])
+}
+
+func requireEditTextContains(t *testing.T, call ParsedToolCall, idx int, key, needle string) {
+	t.Helper()
+	edits, ok := call.Input["edits"].([]any)
+	if !ok || idx < 0 || idx >= len(edits) {
+		t.Fatalf("%s.edits: expected edit at index %d, got %#v", call.Name, idx, call.Input["edits"])
+	}
+	edit, ok := edits[idx].(map[string]any)
+	if !ok {
+		t.Fatalf("%s.edits[%d]: expected object, got %#v", call.Name, idx, edits[idx])
+	}
+	got, ok := edit[key].(string)
+	if !ok || !strings.Contains(got, needle) {
+		t.Fatalf("%s.edits[%d].%s: expected string containing %q, got %#v", call.Name, idx, key, needle, edit[key])
+	}
 }
