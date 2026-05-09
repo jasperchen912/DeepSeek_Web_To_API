@@ -85,7 +85,7 @@ func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Requ
 				return
 			}
 			finalText := cleanVisibleOutput(streamRuntime.text.String(), streamRuntime.stripReferenceMarkers)
-			historySession.Success(http.StatusOK, streamRuntime.thinking.String(), finalText, "end_turn", nil)
+			historySession.Success(http.StatusOK, streamRuntime.thinking.String(), finalText, "end_turn", streamRuntime.finalUsage)
 		},
 		OnContextDone: func() {
 			if historySession != nil {

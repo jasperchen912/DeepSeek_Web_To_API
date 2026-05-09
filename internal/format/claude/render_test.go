@@ -72,3 +72,24 @@ func TestBuildMessageResponseNormalizesToolInputBySchema(t *testing.T) {
 		t.Fatalf("expected taskId coerced to string, got %#v", input["taskId"])
 	}
 }
+
+func TestApplyPromptCacheUsageAddsClaudeReadAndDeepSeekDiagnostics(t *testing.T) {
+	resp := BuildMessageResponse(
+		"msg_1",
+		"claude-sonnet-4-5",
+		[]any{map[string]any{"role": "user", "content": "hi"}},
+		"",
+		"normal answer",
+		nil,
+	)
+
+	ApplyPromptCacheUsage(resp, 64, 32, true, true)
+
+	usage, _ := resp["usage"].(map[string]any)
+	if usage["cache_read_input_tokens"] != 64 || usage["prompt_cache_hit_tokens"] != 64 || usage["prompt_cache_miss_tokens"] != 32 {
+		t.Fatalf("unexpected prompt cache usage: %#v", usage)
+	}
+	if _, ok := usage["cache_creation_input_tokens"]; ok {
+		t.Fatalf("DeepSeek miss tokens must not be reported as Claude cache creation tokens: %#v", usage)
+	}
+}

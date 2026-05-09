@@ -123,7 +123,7 @@ Chat Completions 的最终响应和流式结束块会返回标准 OpenAI token �
 
 OpenAI Chat 与 Responses 会在上游请求之间复用 DeepSeek `chat_session_id`，但这只是远端 session 容器复用：兼容层仍会为每个请求完整归一化 messages/input、重建历史文本、工具提示、文件引用和最终 prompt。普通请求的 completion payload 继续使用 `parent_message_id: nil`，只有空输出 synthetic retry 会沿用现有逻辑把上一条 `response_message_id` 写入 retry payload。
 
-OpenAI Chat 与 Responses 还会记录 prompt prefix cache 诊断：兼容层根据规范化后的 tools/system/developer/历史消息和最后一条消息之前的内容计算 prefix hash 与估算 token，并在本地 tracker 中判断该 prefix 是否复现。请求体 `prompt_cache_key` 或请求头 `X-DeepSeek-Web-To-API-Prompt-Cache-Key` 只作为诊断 hint 参与 tracker 分组，不会转发 DeepSeek，也不会改变最终 prompt 或完整响应缓存 key。该机制不复用旧答案，也不会把本地估算写入 `prompt_tokens_details.cached_tokens`。
+OpenAI Chat 与 Responses 还会记录 prompt prefix cache 诊断：兼容层根据规范化后的 tools/system/developer/历史消息和最后一条消息之前的内容计算 prefix hash 与估算 token，并在本地 tracker 中判断该 prefix 是否复现。请求体 `prompt_cache_key` 或请求头 `X-DeepSeek-Web-To-API-Prompt-Cache-Key` 只作为诊断 hint 参与 tracker 分组，不会转发 DeepSeek，也不会改变最终 prompt 或完整响应缓存 key。该机制不复用旧答案，也不会把本地估算写入 `prompt_tokens_details.cached_tokens`；只有 DeepSeek 上游真实返回 `prompt_cache_hit_tokens` 时，才会映射到 OpenAI 兼容的 cached token 字段。
 
 流式 Chat Completions 与 Responses 在请求声明 OpenAI `tools` 时会启用 tool sieve；如果没有显式 `tools`，但最终 prompt 中已经存在 DSML/XML tool-call wrapper（例如第三方客户端自行注入的 `<DSML|tool_calls>` 工具协议），流式层同样会缓冲并解析这些工具块。缓冲解析会兼容全角竖线、`▁` 分隔符、中文 wrapper 别名、有界模糊 DSML wrapper、全角 `＞` 终止符和参数内嵌 DSML/CDATA 内容等常见 DSML 变体，避免拆分 chunk 时把 DSML 标签作为普通 assistant 文本发给下游 channel。
 
@@ -132,6 +132,8 @@ Tool-call 输出按 `Detect -> Normalize -> Repair -> Parse` 处理：先确认�
 ### Claude Messages
 
 Claude Messages 的 `system`、`messages`、`tools` 和 `tool_result` 需要转换成同一套标准消息。Claude Code 这类客户端依赖稳定流式输出和工具结果不断会话，因此工具历史必须被转写进 prompt-visible 上下文。
+
+Claude Messages direct path 也会进入 prompt prefix cache 诊断。顶层或协议块级 `cache_control` 会被折叠成不含原文的 hint（只包含自动缓存、breakpoint 数量、类型和 TTL），参与本地 tracker 分组；工具 JSON schema 里的普通同名字段不会被当作缓存断点。`cache_control` 本身仍会从最终 prompt 中剥离，也不会转发给 DeepSeek。由于 DeepSeek Web 没有 Claude 的显式 breakpoint API，这里的作用是解释 prefix 稳定性和上游真实 context cache 命中，而不是实现 Claude 原生缓存写入语义。若 DeepSeek 上游真实返回 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，Claude direct 响应会保留这些诊断字段，并仅把 hit tokens 映射为 Claude 的 `cache_read_input_tokens`；miss tokens 不会被伪装成 Claude `cache_creation_input_tokens`。
 
 ### Gemini Contents
 

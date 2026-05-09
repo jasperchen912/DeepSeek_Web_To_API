@@ -12,6 +12,7 @@ import (
 
 	"DeepSeek_Web_To_API/internal/auth"
 	"DeepSeek_Web_To_API/internal/chathistory"
+	"DeepSeek_Web_To_API/internal/promptcache"
 )
 
 type directClaudeAuthStub struct {
@@ -59,6 +60,18 @@ func (s *directClaudeDSStub) GetPow(_ context.Context, _ *auth.RequestAuth, _ in
 func (s *directClaudeDSStub) CallCompletion(_ context.Context, _ *auth.RequestAuth, payload map[string]any, _ string, _ int) (*http.Response, error) {
 	s.seenPayload = payload
 	return s.resp, nil
+}
+
+func historyUsageNumberEqual(value any, want float64) bool {
+	switch n := value.(type) {
+	case int:
+		return float64(n) == want
+	case int64:
+		return float64(n) == want
+	case float64:
+		return n == want
+	}
+	return false
 }
 
 func TestClaudeMessagesUsesNativeDirectStream(t *testing.T) {
@@ -120,9 +133,44 @@ func TestClaudeMessagesUsesNativeDirectStream(t *testing.T) {
 	}
 }
 
+func TestClaudeMessagesObservesPromptCacheControlHint(t *testing.T) {
+	cache := promptcache.New(promptcache.Options{})
+	dsStub := &directClaudeDSStub{}
+	h := &Handler{
+		Store:       streamStatusClaudeStoreStub{},
+		Auth:        &directClaudeAuthStub{},
+		DS:          dsStub,
+		PromptCache: cache,
+	}
+	reqBody := `{"model":"claude-sonnet-4-5","cache_control":{"type":"ephemeral","ttl":"1h"},"system":"stable","messages":[{"role":"user","content":"remember this"},{"role":"assistant","content":"ok"},{"role":"user","content":"answer now"}]}`
+
+	for i := 0; i < 2; i++ {
+		dsStub.resp = makeClaudeSSEHTTPResponse(
+			`data: {"p":"response/content","v":"ok"}`,
+			`data: [DONE]`,
+		)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+		req.Header.Set("Authorization", "Bearer local-key")
+		rec := httptest.NewRecorder()
+		h.Messages(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d expected 200, got %d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+
+	stats := cache.Stats()
+	if stats.Observed != 2 || stats.Eligible != 2 || stats.Reused != 1 {
+		t.Fatalf("unexpected prompt cache stats: %#v", stats)
+	}
+	if !stats.LastHintPresent {
+		t.Fatalf("expected Claude cache_control hint to be present: %#v", stats)
+	}
+}
+
 func TestClaudeMessagesDirectNonStreamStripsDefaultThinking(t *testing.T) {
 	dsStub := &directClaudeDSStub{
 		resp: makeClaudeSSEHTTPResponse(
+			`data: {"p":"response","o":"BATCH","v":[{"p":"token_usage","v":{"prompt_cache_hit_tokens":64,"prompt_cache_miss_tokens":32}}]}`,
 			`data: {"p":"response/thinking_content","v":"hidden"}`,
 			`data: {"p":"response/content","v":"visible"}`,
 			`data: [DONE]`,
@@ -156,6 +204,78 @@ func TestClaudeMessagesDirectNonStreamStripsDefaultThinking(t *testing.T) {
 	block, _ := content[0].(map[string]any)
 	if block["type"] != "text" || block["text"] != "visible" {
 		t.Fatalf("expected visible text block only, got %#v", block)
+	}
+}
+
+func TestClaudeMessagesDirectNonStreamPreservesDeepSeekPromptCacheUsage(t *testing.T) {
+	dsStub := &directClaudeDSStub{
+		resp: makeClaudeSSEHTTPResponse(
+			`data: {"p":"response/content","v":"visible"}`,
+			`data: {"p":"response","o":"BATCH","v":[{"p":"token_usage","v":{"prompt_cache_hit_tokens":64,"prompt_cache_miss_tokens":32}}]}`,
+			`data: [DONE]`,
+		),
+	}
+	h := &Handler{
+		Store: streamStatusClaudeStoreStub{},
+		Auth:  &directClaudeAuthStub{},
+		DS:    dsStub,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer local-key")
+	rec := httptest.NewRecorder()
+	h.Messages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	usage, _ := out["usage"].(map[string]any)
+	if usage["cache_read_input_tokens"] != float64(64) || usage["prompt_cache_hit_tokens"] != float64(64) || usage["prompt_cache_miss_tokens"] != float64(32) {
+		t.Fatalf("unexpected prompt cache usage: %#v", usage)
+	}
+	if _, ok := usage["cache_creation_input_tokens"]; ok {
+		t.Fatalf("DeepSeek miss tokens must not be reported as Claude cache creation tokens: %#v", usage)
+	}
+}
+
+func TestClaudeMessagesDirectNonStreamCapturesPromptCacheUsageInHistory(t *testing.T) {
+	historyStore := chathistory.New(filepath.Join(t.TempDir(), "chat_history.json"))
+	dsStub := &directClaudeDSStub{
+		resp: makeClaudeSSEHTTPResponse(
+			`data: {"p":"response/content","v":"visible"}`,
+			`data: {"p":"response","o":"BATCH","v":[{"p":"token_usage","v":{"prompt_cache_hit_tokens":64,"prompt_cache_miss_tokens":32}}]}`,
+			`data: [DONE]`,
+		),
+	}
+	h := &Handler{
+		Store:       streamStatusClaudeStoreStub{},
+		Auth:        &directClaudeAuthStub{},
+		DS:          dsStub,
+		ChatHistory: historyStore,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"history usage"}]}`))
+	req.Header.Set("Authorization", "Bearer local-key")
+	rec := httptest.NewRecorder()
+	h.Messages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	snapshot, err := historyStore.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot failed: %v", err)
+	}
+	item, err := historyStore.Get(snapshot.Items[0].ID)
+	if err != nil {
+		t.Fatalf("get history item failed: %v", err)
+	}
+	if !historyUsageNumberEqual(item.Usage["cache_read_input_tokens"], 64) || !historyUsageNumberEqual(item.Usage["prompt_cache_hit_tokens"], 64) || !historyUsageNumberEqual(item.Usage["prompt_cache_miss_tokens"], 32) {
+		t.Fatalf("expected Claude prompt cache usage in history, got %#v", item.Usage)
 	}
 }
 
@@ -257,6 +377,7 @@ func TestClaudeMessagesDirectStreamCapturesChatHistory(t *testing.T) {
 		resp: makeClaudeSSEHTTPResponse(
 			`data: {"p":"response/content","v":"Hel"}`,
 			`data: {"p":"response/content","v":"lo"}`,
+			`data: {"p":"response","o":"BATCH","v":[{"p":"token_usage","v":{"prompt_cache_hit_tokens":128,"prompt_cache_miss_tokens":16}}]}`,
 			`data: [DONE]`,
 		),
 	}
@@ -288,5 +409,8 @@ func TestClaudeMessagesDirectStreamCapturesChatHistory(t *testing.T) {
 	}
 	if item.Status != "success" || item.Content != "Hello" || !item.Stream {
 		t.Fatalf("unexpected captured stream item: %#v", item)
+	}
+	if !historyUsageNumberEqual(item.Usage["cache_read_input_tokens"], 128) || !historyUsageNumberEqual(item.Usage["prompt_cache_hit_tokens"], 128) || !historyUsageNumberEqual(item.Usage["prompt_cache_miss_tokens"], 16) {
+		t.Fatalf("expected Claude stream prompt cache usage in history, got %#v", item.Usage)
 	}
 }

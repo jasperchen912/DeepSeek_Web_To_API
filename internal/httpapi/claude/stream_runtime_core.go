@@ -36,6 +36,8 @@ type claudeStreamRuntime struct {
 	toolSieve              toolstream.State
 	toolCalls              []toolcall.ParsedToolCall
 	leakedToolResultFilter shared.LeakedToolResultStreamFilter
+	promptCacheUsage       sse.PromptCacheUsage
+	finalUsage             map[string]any
 
 	nextBlockIndex     int
 	thinkingBlockOpen  bool
@@ -86,6 +88,7 @@ func (s *claudeStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 		s.upstreamErr = parsed.ErrorMessage
 		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReason("upstream_error")}
 	}
+	s.promptCacheUsage.Merge(parsed.PromptCacheUsage)
 	if parsed.Stop {
 		return streamengine.ParsedDecision{Stop: true}
 	}

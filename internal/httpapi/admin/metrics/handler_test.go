@@ -109,6 +109,15 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 			Entries:              3,
 			LastPrefixHash:       "hash-a",
 			LastHintPresent:      true,
+			BySurface: map[string]promptcache.SurfaceStats{
+				"anthropic.messages": {
+					Observed:        2,
+					Eligible:        2,
+					Reused:          1,
+					ReuseRate:       50,
+					LastHintPresent: true,
+				},
+			},
 		}},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/admin/metrics/overview", nil)
@@ -166,6 +175,9 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 	}
 	if body.PromptCache.Observed != 5 || body.PromptCache.Eligible != 4 || body.PromptCache.Reused != 2 || body.PromptCache.ReuseRate != 50 || body.PromptCache.EstimatedReadTokens != 300 || !body.PromptCache.LastHintPresent {
 		t.Fatalf("unexpected prompt cache metrics: %#v", body.PromptCache)
+	}
+	if body.PromptCache.BySurface["anthropic.messages"].ReuseRate != 50 || !body.PromptCache.BySurface["anthropic.messages"].LastHintPresent {
+		t.Fatalf("unexpected prompt cache surface metrics: %#v", body.PromptCache.BySurface)
 	}
 	if body.CurrentInputPrefix.Applied != 2 || body.CurrentInputPrefix.Reused != 1 || body.CurrentInputPrefix.Refreshes != 1 || body.CurrentInputPrefix.ReuseRate != 50 || body.CurrentInputPrefix.CurrentInputFileMsReusedAvg != 120 || body.CurrentInputPrefix.CurrentInputFileMsRefreshAvg != 2000 {
 		t.Fatalf("unexpected current input prefix metrics: %#v", body.CurrentInputPrefix)

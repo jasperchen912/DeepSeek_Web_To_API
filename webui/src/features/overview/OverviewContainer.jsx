@@ -130,6 +130,41 @@ function responseCacheUncacheableReasons(cache) {
         .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
 }
 
+function promptSurfaceLabel(surface) {
+    const key = String(surface || '').trim().toLowerCase()
+    if (key === 'chat.completions') return 'Chat Completions'
+    if (key === 'responses') return 'Responses'
+    if (key === 'anthropic.messages') return 'Claude Messages'
+    if (key === 'unknown') return 'Unknown'
+    return key || 'Unknown'
+}
+
+function promptCacheSurfaceRows(promptCache) {
+    const raw = promptCache?.by_surface && typeof promptCache.by_surface === 'object'
+        ? promptCache.by_surface
+        : {}
+    return Object.entries(raw)
+        .map(([surface, item]) => ({
+            surface,
+            label: promptSurfaceLabel(surface),
+            observed: Number(item?.observed) || 0,
+            eligible: Number(item?.eligible) || 0,
+            reused: Number(item?.reused) || 0,
+            reuseRate: Number(item?.reuse_rate) || 0,
+            readTokens: Number(item?.estimated_read_tokens) || 0,
+            writeTokens: Number(item?.estimated_write_tokens) || 0,
+            hintPresent: Boolean(item?.last_hint_present),
+        }))
+        .filter(item => item.observed > 0)
+        .sort((a, b) => b.observed - a.observed || a.label.localeCompare(b.label))
+}
+
+function shortHash(value) {
+    const text = String(value || '').trim()
+    if (!text) return '-'
+    return text.length <= 12 ? text : text.slice(0, 12)
+}
+
 function loadStatusLabel(status) {
     if (status === 'critical') return '高负载'
     if (status === 'warn') return '偏高'
@@ -373,6 +408,17 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
     const cacheSingleflightHits = Number(cache.singleflight_hits) || 0
     const cacheInflightWaits = Number(cache.inflight_waits) || 0
     const uncacheableReasonRows = responseCacheUncacheableReasons(cache).slice(0, 4)
+    const promptCache = metrics.prompt_cache || {}
+    const promptObserved = Number(promptCache.observed) || 0
+    const promptEligible = Number(promptCache.eligible) || 0
+    const promptReused = Number(promptCache.reused) || 0
+    const promptReuseRate = Number(promptCache.reuse_rate) || 0
+    const promptReadTokens = Number(promptCache.estimated_read_tokens) || 0
+    const promptWriteTokens = Number(promptCache.estimated_write_tokens) || 0
+    const promptEntries = Number(promptCache.entries) || 0
+    const promptLastPrefixHash = shortHash(promptCache.last_prefix_hash)
+    const promptLastHintPresent = Boolean(promptCache.last_hint_present)
+    const promptSurfaceRows = promptCacheSurfaceRows(promptCache).slice(0, 4)
     const currentInputPrefix = metrics.current_input_prefix || {}
     const prefixApplied = Number(currentInputPrefix.applied) || 0
     const prefixReused = Number(currentInputPrefix.reused) || 0
@@ -443,6 +489,47 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
                 <MetricCard icon={History} label="Tail 大小" value={formatBytes(prefixTailAvg)} hint={`p95 ${formatBytes(prefixTailP95)} · inline rolling tail`} tone="cyan" />
                 <MetricCard icon={Zap} label="Current Input 耗时" value={formatElapsed(prefixFileMsAvg)} hint={`reuse ${formatElapsed(prefixFileMsReusedAvg)} / refresh ${formatElapsed(prefixFileMsRefreshAvg)}`} />
             </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                <MetricCard icon={Sparkles} label="Prompt Cache 复用" value={formatPercent(promptReuseRate)} hint={`${formatNumber(promptReused)} / ${formatNumber(promptEligible)} eligible · ${formatNumber(promptObserved)} observed`} tone="emerald" />
+                <MetricCard icon={Database} label="Prefix 读估算" value={formatNumber(promptReadTokens)} hint={`write ${formatNumber(promptWriteTokens)} estimated tokens`} tone="cyan" />
+                <MetricCard icon={Server} label="Tracker Entries" value={formatNumber(promptEntries)} hint={promptLastHintPresent ? '最近请求带 cache hint' : '最近请求无 cache hint'} tone="amber" />
+                <MetricCard icon={History} label="最新 Prefix" value={promptLastPrefixHash} hint={`${formatNumber(promptSurfaceRows.length)} 个 surface 有观测`} />
+            </div>
+
+            {promptSurfaceRows.length > 0 && (
+                <div className="ops-panel p-4">
+                    <div className="flex items-center justify-between gap-4">
+                        <div>
+                            <p className="ops-kicker">Prompt Cache</p>
+                            <h2 className="ops-heading mt-1">入口复用诊断</h2>
+                        </div>
+                        <Sparkles className="w-5 h-5 text-primary" />
+                    </div>
+                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                        {promptSurfaceRows.map(item => (
+                            <div key={item.surface} className="rounded-lg border border-slate-200 bg-white/80 px-3 py-3 min-w-0">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="min-w-0 truncate text-xs font-black text-slate-950">{item.label}</span>
+                                    <strong className="shrink-0 text-xs font-black text-emerald-700">{formatPercent(item.reuseRate)}</strong>
+                                </div>
+                                <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden">
+                                    <div
+                                        className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+                                        style={{ width: `${Math.min(100, Math.max(0, item.reuseRate))}%` }}
+                                    />
+                                </div>
+                                <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-muted-foreground">
+                                    <div>{formatNumber(item.reused)} reused</div>
+                                    <div>{formatNumber(item.eligible)} eligible</div>
+                                    <div>{formatNumber(item.readTokens)} read est</div>
+                                    <div>{item.hintPresent ? 'hint yes' : 'hint no'}</div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             <div className="ops-panel p-4">
                 <div className="flex items-center justify-between gap-4">

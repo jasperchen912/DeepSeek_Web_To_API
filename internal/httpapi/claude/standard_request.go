@@ -2,6 +2,7 @@ package claude
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"DeepSeek_Web_To_API/internal/config"
@@ -47,6 +48,7 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 	}
 	dsMessages, _ := dsPayload["messages"].([]any)
 	finalPrompt := prompt.MessagesPrepareWithThinking(toMessageMaps(dsMessages), thinkingEnabled)
+	prefixInfo := promptcompat.AnalyzeOpenAIPromptPrefix(dsMessages, nil, "", promptcompat.DefaultToolChoicePolicy(), thinkingEnabled, dsModel)
 	toolNames := extractClaudeToolNames(toolsRequested)
 	if len(toolNames) == 0 && len(toolsRequested) > 0 {
 		toolNames = []string{"__any_tool__"}
@@ -54,21 +56,161 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 
 	return claudeNormalizedRequest{
 		Standard: promptcompat.StandardRequest{
-			Surface:         "anthropic_messages",
-			RequestedModel:  strings.TrimSpace(model),
-			ResolvedModel:   dsModel,
-			ResponseModel:   strings.TrimSpace(model),
-			Messages:        dsMessages,
-			PromptTokenText: finalPrompt,
-			ToolsRaw:        toolsRequested,
-			FinalPrompt:     finalPrompt,
-			ToolNames:       toolNames,
-			Stream:          util.ToBool(req["stream"]),
-			Thinking:        thinkingEnabled,
-			Search:          searchEnabled,
+			Surface:              "anthropic_messages",
+			RequestedModel:       strings.TrimSpace(model),
+			ResolvedModel:        dsModel,
+			ResponseModel:        strings.TrimSpace(model),
+			Messages:             dsMessages,
+			PromptTokenText:      finalPrompt,
+			ToolsRaw:             toolsRequested,
+			PromptCacheHint:      claudePromptCacheHint(req),
+			PromptPrefixHash:     prefixInfo.Hash,
+			PromptPrefixTokens:   prefixInfo.PrefixTokens,
+			PromptTailTokens:     prefixInfo.TailTokens,
+			PromptPrefixEligible: prefixInfo.Eligible,
+			FinalPrompt:          finalPrompt,
+			ToolNames:            toolNames,
+			Stream:               util.ToBool(req["stream"]),
+			Thinking:             thinkingEnabled,
+			Search:               searchEnabled,
 		},
 		NormalizedMessages: normalizedMessages,
 	}, nil
+}
+
+type claudeCacheControlSummary struct {
+	auto     string
+	blocks   int
+	controls map[string]int
+}
+
+func claudePromptCacheHint(req map[string]any) string {
+	if req == nil {
+		return ""
+	}
+	summary := claudeCacheControlSummary{controls: map[string]int{}}
+	if control := claudeCacheControlID(req["cache_control"]); control != "" {
+		summary.auto = control
+	}
+	observeClaudeToolCacheControls(req["tools"], &summary)
+	observeClaudeSystemCacheControls(req["system"], &summary)
+	observeClaudeMessageCacheControls(req["messages"], &summary)
+	if summary.auto == "" && summary.blocks == 0 {
+		return ""
+	}
+	parts := []string{"claude"}
+	if summary.auto != "" {
+		parts = append(parts, "auto:"+summary.auto)
+	}
+	if summary.blocks > 0 {
+		parts = append(parts, fmt.Sprintf("blocks:%d", summary.blocks))
+		keys := make([]string, 0, len(summary.controls))
+		for key := range summary.controls {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		controls := make([]string, 0, len(keys))
+		for _, key := range keys {
+			controls = append(controls, fmt.Sprintf("%s=%d", key, summary.controls[key]))
+		}
+		if len(controls) > 0 {
+			parts = append(parts, "controls:"+strings.Join(controls, ","))
+		}
+	}
+	return strings.Join(parts, ";")
+}
+
+func observeClaudeToolCacheControls(value any, summary *claudeCacheControlSummary) {
+	if summary == nil || value == nil {
+		return
+	}
+	tools, ok := value.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range tools {
+		observeClaudeCacheControlBlock(item, summary)
+	}
+}
+
+func observeClaudeSystemCacheControls(value any, summary *claudeCacheControlSummary) {
+	if summary == nil || value == nil {
+		return
+	}
+	switch system := value.(type) {
+	case []any:
+		for _, item := range system {
+			observeClaudeCacheControlBlock(item, summary)
+		}
+	case map[string]any:
+		observeClaudeCacheControlBlock(system, summary)
+	}
+}
+
+func observeClaudeMessageCacheControls(value any, summary *claudeCacheControlSummary) {
+	if summary == nil || value == nil {
+		return
+	}
+	messages, ok := value.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		observeClaudeContentCacheControls(msg["content"], summary)
+	}
+}
+
+func observeClaudeContentCacheControls(value any, summary *claudeCacheControlSummary) {
+	if summary == nil || value == nil {
+		return
+	}
+	switch content := value.(type) {
+	case []any:
+		for _, item := range content {
+			observeClaudeCacheControlBlock(item, summary)
+		}
+	case map[string]any:
+		observeClaudeCacheControlBlock(content, summary)
+	}
+}
+
+func observeClaudeCacheControlBlock(value any, summary *claudeCacheControlSummary) {
+	block, ok := value.(map[string]any)
+	if !ok || summary == nil {
+		return
+	}
+	if control := claudeCacheControlID(block["cache_control"]); control != "" {
+		summary.blocks++
+		summary.controls[control]++
+	}
+}
+
+func claudeCacheControlID(value any) string {
+	control, ok := value.(map[string]any)
+	if !ok || control == nil {
+		return ""
+	}
+	typeName := strings.ToLower(strings.TrimSpace(safeStringValue(control["type"])))
+	if typeName == "" {
+		typeName = "ephemeral"
+	}
+	if typeName != "ephemeral" {
+		typeName = "other"
+	}
+	ttl := strings.ToLower(strings.TrimSpace(safeStringValue(control["ttl"])))
+	switch ttl {
+	case "", "5m":
+		ttl = "5m"
+	case "1h":
+		ttl = "1h"
+	default:
+		ttl = "other"
+	}
+	return typeName + ":" + ttl
 }
 
 func injectClaudeToolPrompt(payload map[string]any, normalizedMessages []any, tools []any) []any {

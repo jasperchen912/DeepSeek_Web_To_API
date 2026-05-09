@@ -65,6 +65,40 @@ func TestNormalizeClaudeRequestSupportsCamelCaseInputSchemaPromptInjection(t *te
 	}
 }
 
+func TestNormalizeClaudeRequestIgnoresSchemaCacheControlPropertyAsHint(t *testing.T) {
+	t.Setenv("DEEPSEEK_WEB_TO_API_CONFIG_JSON", `{}`)
+	store := config.LoadStore()
+	req := map[string]any{
+		"model": "claude-sonnet-4-5",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		"tools": []any{
+			map[string]any{
+				"name":        "configure",
+				"description": "Configure a resource",
+				"input_schema": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"cache_control": map[string]any{
+							"type":        "object",
+							"description": "user payload field, not Anthropic transport cache_control",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	norm, err := normalizeClaudeRequest(store, req)
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if norm.Standard.PromptCacheHint != "" {
+		t.Fatalf("expected schema property not to create prompt cache hint, got %q", norm.Standard.PromptCacheHint)
+	}
+}
+
 func TestNormalizeClaudeRequestInjectsToolsIntoExistingSystemMessage(t *testing.T) {
 	t.Setenv("DEEPSEEK_WEB_TO_API_CONFIG_JSON", `{}`)
 	store := config.LoadStore()
@@ -169,8 +203,40 @@ func TestNormalizeClaudeRequestSupportsClaudeCodeSystemBlocks(t *testing.T) {
 	if len(norm.Standard.Messages) == 0 {
 		t.Fatalf("expected prompt messages to be populated")
 	}
+	if norm.Standard.PromptCacheHint != "claude;blocks:2;controls:ephemeral:1h=1,ephemeral:5m=1" {
+		t.Fatalf("unexpected prompt cache hint: %q", norm.Standard.PromptCacheHint)
+	}
+	if !norm.Standard.PromptPrefixEligible || norm.Standard.PromptPrefixHash == "" || norm.Standard.PromptPrefixTokens <= 0 {
+		t.Fatalf("expected prompt prefix diagnostics, got eligible=%v hash=%q tokens=%d", norm.Standard.PromptPrefixEligible, norm.Standard.PromptPrefixHash, norm.Standard.PromptPrefixTokens)
+	}
 	first, _ := norm.Standard.Messages[0].(map[string]any)
 	if first["role"] != "system" {
 		t.Fatalf("expected first standard message to include normalized top-level system, got %#v", norm.Standard.Messages)
+	}
+}
+
+func TestNormalizeClaudeRequestRecordsTopLevelCacheControlHint(t *testing.T) {
+	t.Setenv("DEEPSEEK_WEB_TO_API_CONFIG_JSON", `{}`)
+	store := config.LoadStore()
+	req := map[string]any{
+		"model":         "claude-sonnet-4-6",
+		"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
+		"system":        "stable system",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "remember this"},
+			map[string]any{"role": "assistant", "content": "ok"},
+			map[string]any{"role": "user", "content": "now answer"},
+		},
+	}
+
+	norm, err := normalizeClaudeRequest(store, req)
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if norm.Standard.PromptCacheHint != "claude;auto:ephemeral:1h" {
+		t.Fatalf("unexpected prompt cache hint: %q", norm.Standard.PromptCacheHint)
+	}
+	if !norm.Standard.PromptPrefixEligible || norm.Standard.PromptPrefixHash == "" || norm.Standard.PromptTailTokens <= 0 {
+		t.Fatalf("expected prefix diagnostics, got eligible=%v hash=%q tail=%d", norm.Standard.PromptPrefixEligible, norm.Standard.PromptPrefixHash, norm.Standard.PromptTailTokens)
 	}
 }

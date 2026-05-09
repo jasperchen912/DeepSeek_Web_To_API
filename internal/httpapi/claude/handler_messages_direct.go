@@ -70,6 +70,7 @@ func (h *Handler) handleDirectClaudeIfAvailable(w http.ResponseWriter, r *http.R
 	}
 	defer h.Auth.Release(a)
 
+	norm.Standard = openaishared.ObservePromptCache(h.PromptCache, r, a, norm.Standard, "anthropic.messages")
 	r = r.WithContext(auth.WithAuth(r.Context(), a))
 	if historySession == nil {
 		historySession = historycapture.Start(h.ChatHistory, r, a, norm.Standard)
@@ -187,6 +188,12 @@ func applyClaudeDirectThinkingPolicy(norm *claudeNormalizedRequest, original map
 	norm.Standard.Thinking = enabled
 	norm.Standard.ExposeReasoning = hasOverride && enabled
 	norm.Standard.FinalPrompt = prompt.MessagesPrepareWithThinking(toMessageMaps(norm.Standard.Messages), enabled)
+	norm.Standard.PromptTokenText = norm.Standard.FinalPrompt
+	prefixInfo := promptcompat.AnalyzeOpenAIPromptPrefix(norm.Standard.Messages, nil, "", promptcompat.DefaultToolChoicePolicy(), enabled, norm.Standard.ResolvedModel)
+	norm.Standard.PromptPrefixHash = prefixInfo.Hash
+	norm.Standard.PromptPrefixTokens = prefixInfo.PrefixTokens
+	norm.Standard.PromptTailTokens = prefixInfo.TailTokens
+	norm.Standard.PromptPrefixEligible = prefixInfo.Eligible
 	return norm.Standard.ExposeReasoning
 }
 
@@ -228,6 +235,7 @@ func (h *Handler) handleDirectClaudeNonStream(w http.ResponseWriter, resp *http.
 		norm.Standard.ToolNames,
 		norm.Standard.ToolsRaw,
 	)
+	claudefmt.ApplyPromptCacheUsage(body, result.PromptCacheUsage.HitTokens, result.PromptCacheUsage.MissTokens, result.PromptCacheUsage.HasHit, result.PromptCacheUsage.HasMiss)
 	raw, err := json.Marshal(body)
 	if err != nil {
 		if historySession != nil {
@@ -237,7 +245,8 @@ func (h *Handler) handleDirectClaudeNonStream(w http.ResponseWriter, resp *http.
 		return
 	}
 	if historySession != nil {
-		historySession.Success(http.StatusOK, finalThinking, finalText, "end_turn", nil)
+		usage, _ := body["usage"].(map[string]any)
+		historySession.Success(http.StatusOK, finalThinking, finalText, "end_turn", usage)
 	}
 	if !exposeThinking {
 		raw = stripClaudeThinkingBlocks(raw)

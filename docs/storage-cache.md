@@ -148,9 +148,9 @@ OpenAI Chat Completions 和 Responses 会在 cache miss 进入上游时复用 De
 
 ### Prompt Prefix 诊断
 
-OpenAI Chat Completions 和 Responses 会记录 prompt prefix cache 诊断数据，用于对齐 OpenAI/Claude 的“稳定前缀更容易命中上游缓存”语义。诊断 tracker 只保存 prefix hash、估算 token 和时间戳，不保存 prompt 原文，也不会复用旧答案。
+OpenAI Chat Completions、Responses 和 Claude Messages direct path 会记录 prompt prefix cache 诊断数据，用于对齐 OpenAI/Claude 的“稳定前缀更容易命中上游缓存”语义。诊断 tracker 只保存 prefix hash、估算 token 和时间戳，不保存 prompt 原文，也不会复用旧答案。
 
-prefix 边界固定为 tools/system/developer/历史消息以及最后一条消息之前的内容；最后一条消息视为 tail。请求体 `prompt_cache_key` 或请求头 `X-DeepSeek-Web-To-API-Prompt-Cache-Key` 会作为 hint 参与 tracker 分组，但不会转发给 DeepSeek，也不会加入完整响应缓存 key。管理台总览的 `prompt_cache` 字段展示 observed、eligible、reused、reuse_rate、estimated_read_tokens、estimated_write_tokens、last_prefix_hash 和 last_hint_present；本地估算不会写入 `usage.prompt_tokens_details.cached_tokens`。如果 DeepSeek 上游流里真实返回 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，则只透传这些真实字段，并把 hit tokens 映射到 OpenAI 兼容的 cached tokens 位置。
+prefix 边界固定为 tools/system/developer/历史消息以及最后一条消息之前的内容；最后一条消息视为 tail。请求体 `prompt_cache_key`、请求头 `X-DeepSeek-Web-To-API-Prompt-Cache-Key`，以及 Claude Messages 的顶层或块级 `cache_control` 会作为 hint 参与 tracker 分组，但不会转发给 DeepSeek，也不会加入完整响应缓存 key。Claude hint 只记录缓存控制类型、TTL 和 breakpoint 数量，不记录 prompt 原文。管理台总览的 `prompt_cache` 字段展示 observed、eligible、reused、reuse_rate、estimated_read_tokens、estimated_write_tokens、last_prefix_hash、last_hint_present，并通过 API 与 WebUI 的 `by_surface` 区分 Chat Completions、Responses、Claude Messages 等入口；本地估算不会写入 `usage.prompt_tokens_details.cached_tokens`。如果 DeepSeek 上游流里真实返回 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，则只透传这些真实字段，并把 hit tokens 映射到 OpenAI 兼容的 cached tokens 位置；Claude direct 会把 hit tokens 映射到 `cache_read_input_tokens`，但不会把 miss tokens 伪装成 `cache_creation_input_tokens`。
 
 **章节来源**
 - [internal/chathistory/sqlite_store.go](file://internal/chathistory/sqlite_store.go)
@@ -181,7 +181,7 @@ prefix 边界固定为 tools/system/developer/历史消息以及最后一条消�
 - 账号导入后 JSON 里看不到账号：这是预期行为，账号已经进入 `data/accounts.sqlite`；管理台账号列表和批量导出会从内存快照读取。
 - 缓存命中率低：检查请求体中是否存在每次变化的字段、是否显式 `no-cache`、是否跨 API Key/调用方；响应缓存会规范化协议别名路径和常见内容协商头，但语义不同的请求头、模型或请求体仍会拆分 key。若关注会话复用，再确认 `SessionKey` 稳定且 `auto_delete.mode=none`。
 - 磁盘缓存未生效：确认 `cache.response.dir` 可写，且响应为 2xx、非流式、无 `Set-Cookie`、无 `Cache-Control: no-store`、响应体未超过上限。磁盘写失败不会计入成功 store。
-- Prompt prefix 复用率低：检查 system/tools/历史内容是否每次变化，是否只有单轮纯 user 请求，或者 `prompt_cache_key` / `X-DeepSeek-Web-To-API-Prompt-Cache-Key` 是否在同一会话中不稳定。
+- Prompt prefix 复用率低：检查 system/tools/历史内容是否每次变化，是否只有单轮纯 user 请求，或者 `prompt_cache_key` / `X-DeepSeek-Web-To-API-Prompt-Cache-Key` / Claude `cache_control` 是否在同一会话中不稳定。
 
 **章节来源**
 - [internal/chathistory/store.go](file://internal/chathistory/store.go)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	claudefmt "DeepSeek_Web_To_API/internal/format/claude"
 	streamengine "DeepSeek_Web_To_API/internal/stream"
 	"DeepSeek_Web_To_API/internal/toolcall"
 	"DeepSeek_Web_To_API/internal/toolstream"
@@ -65,15 +66,18 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 	}
 
 	outputTokens := util.CountOutputTokens(finalThinking, s.model) + util.CountOutputTokens(finalText, s.model)
+	usage := map[string]any{
+		"output_tokens": outputTokens,
+	}
+	claudefmt.ApplyPromptCacheUsageToUsage(usage, s.promptCacheUsage.HitTokens, s.promptCacheUsage.MissTokens, s.promptCacheUsage.HasHit, s.promptCacheUsage.HasMiss)
+	s.finalUsage = usage
 	s.send("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
 			"stop_reason":   stopReason,
 			"stop_sequence": nil,
 		},
-		"usage": map[string]any{
-			"output_tokens": outputTokens,
-		},
+		"usage": usage,
 	})
 	s.send("message_stop", map[string]any{"type": "message_stop"})
 }

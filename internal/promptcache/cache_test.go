@@ -35,6 +35,13 @@ func TestObserveTracksReuseAndTokenEstimates(t *testing.T) {
 	if stats.EstimatedWriteTokens != 128 || stats.EstimatedReadTokens != 128 {
 		t.Fatalf("unexpected token estimates: %#v", stats)
 	}
+	chatStats := stats.BySurface["chat.completions"]
+	if chatStats.Observed != 2 || chatStats.Eligible != 2 || chatStats.Reused != 1 || chatStats.ReuseRate != 50 {
+		t.Fatalf("unexpected per-surface stats: %#v", stats.BySurface)
+	}
+	if chatStats.EstimatedWriteTokens != 128 || chatStats.EstimatedReadTokens != 128 {
+		t.Fatalf("unexpected per-surface token estimates: %#v", chatStats)
+	}
 }
 
 func TestKeyVariesByIsolationFields(t *testing.T) {
@@ -117,5 +124,40 @@ func TestObserveIneligibleOnlyUpdatesObserved(t *testing.T) {
 	stats := cache.Stats()
 	if stats.Observed != 1 || stats.Eligible != 0 || stats.Entries != 0 || !stats.LastHintPresent {
 		t.Fatalf("unexpected stats: %#v", stats)
+	}
+	chatStats := stats.BySurface["chat.completions"]
+	if chatStats.Observed != 1 || chatStats.Eligible != 0 || !chatStats.LastHintPresent {
+		t.Fatalf("unexpected per-surface stats: %#v", stats.BySurface)
+	}
+}
+
+func TestObserveSeparatesSurfaceStats(t *testing.T) {
+	t.Parallel()
+
+	cache := New(Options{TTL: time.Hour, MaxEntries: 10})
+	base := Observation{
+		Auth:         &auth.RequestAuth{CallerID: "caller", AccountID: "acct-a"},
+		Model:        "deepseek-v4-flash",
+		PrefixHash:   "hash-a",
+		PrefixTokens: 20,
+		Eligible:     true,
+	}
+	chat := base
+	chat.Surface = "chat.completions"
+	claude := base
+	claude.Surface = "anthropic.messages"
+	cache.Observe(chat)
+	cache.Observe(chat)
+	cache.Observe(claude)
+
+	stats := cache.Stats()
+	if stats.Reused != 1 {
+		t.Fatalf("unexpected aggregate reuse: %#v", stats)
+	}
+	if got := stats.BySurface["chat.completions"]; got.Observed != 2 || got.Reused != 1 || got.ReuseRate != 50 {
+		t.Fatalf("unexpected chat surface stats: %#v", got)
+	}
+	if got := stats.BySurface["anthropic.messages"]; got.Observed != 1 || got.Reused != 0 || got.ReuseRate != 0 {
+		t.Fatalf("unexpected Claude surface stats: %#v", got)
 	}
 }

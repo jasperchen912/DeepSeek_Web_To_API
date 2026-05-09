@@ -111,6 +111,32 @@ func TestHandleClaudeStreamRealtimeTextIncrementsWithEventHeaders(t *testing.T) 
 	}
 }
 
+func TestHandleClaudeStreamRealtimePreservesDeepSeekPromptCacheUsage(t *testing.T) {
+	h := &Handler{}
+	resp := makeClaudeSSEHTTPResponse(
+		`data: {"p":"response/content","v":"Hi"}`,
+		`data: {"p":"response","o":"BATCH","v":[{"p":"token_usage","v":{"prompt_cache_hit_tokens":128,"prompt_cache_miss_tokens":16}}]}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
+
+	h.handleClaudeStreamRealtime(rec, req, resp, "claude-sonnet-4-5", []any{map[string]any{"role": "user", "content": "hi"}}, false, false, nil, nil)
+
+	frames := parseClaudeFrames(t, rec.Body.String())
+	deltas := findClaudeFrames(frames, "message_delta")
+	if len(deltas) == 0 {
+		t.Fatalf("expected message_delta frame, body=%s", rec.Body.String())
+	}
+	usage, _ := deltas[len(deltas)-1].Payload["usage"].(map[string]any)
+	if usage["cache_read_input_tokens"] != float64(128) || usage["prompt_cache_hit_tokens"] != float64(128) || usage["prompt_cache_miss_tokens"] != float64(16) {
+		t.Fatalf("unexpected prompt cache usage: %#v body=%s", usage, rec.Body.String())
+	}
+	if _, ok := usage["cache_creation_input_tokens"]; ok {
+		t.Fatalf("DeepSeek miss tokens must not be reported as Claude cache creation tokens: %#v", usage)
+	}
+}
+
 func TestHandleClaudeStreamRealtimeThinkingDelta(t *testing.T) {
 	h := &Handler{}
 	resp := makeClaudeSSEHTTPResponse(

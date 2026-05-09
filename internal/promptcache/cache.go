@@ -43,13 +43,25 @@ type Result struct {
 }
 
 type Stats struct {
+	Observed             int64                   `json:"observed"`
+	Eligible             int64                   `json:"eligible"`
+	Reused               int64                   `json:"reused"`
+	ReuseRate            float64                 `json:"reuse_rate"`
+	EstimatedReadTokens  int64                   `json:"estimated_read_tokens"`
+	EstimatedWriteTokens int64                   `json:"estimated_write_tokens"`
+	Entries              int64                   `json:"entries"`
+	LastPrefixHash       string                  `json:"last_prefix_hash,omitempty"`
+	LastHintPresent      bool                    `json:"last_hint_present"`
+	BySurface            map[string]SurfaceStats `json:"by_surface,omitempty"`
+}
+
+type SurfaceStats struct {
 	Observed             int64   `json:"observed"`
 	Eligible             int64   `json:"eligible"`
 	Reused               int64   `json:"reused"`
 	ReuseRate            float64 `json:"reuse_rate"`
 	EstimatedReadTokens  int64   `json:"estimated_read_tokens"`
 	EstimatedWriteTokens int64   `json:"estimated_write_tokens"`
-	Entries              int64   `json:"entries"`
 	LastPrefixHash       string  `json:"last_prefix_hash,omitempty"`
 	LastHintPresent      bool    `json:"last_hint_present"`
 }
@@ -65,7 +77,18 @@ type Cache struct {
 	ttl        time.Duration
 	maxEntries int
 	entries    map[string]entry
+	bySurface  map[string]*surfaceCounters
 
+	observed             int64
+	eligible             int64
+	reused               int64
+	estimatedReadTokens  int64
+	estimatedWriteTokens int64
+	lastPrefixHash       string
+	lastHintPresent      bool
+}
+
+type surfaceCounters struct {
 	observed             int64
 	eligible             int64
 	reused               int64
@@ -88,6 +111,7 @@ func New(opts Options) *Cache {
 		ttl:        ttl,
 		maxEntries: maxEntries,
 		entries:    map[string]entry{},
+		bySurface:  map[string]*surfaceCounters{},
 	}
 }
 
@@ -107,26 +131,34 @@ func (c *Cache) Observe(in Observation) Result {
 	key := Key(in)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	surfaceStats := c.surfaceStatsLocked(in.Surface)
 
 	c.observed++
 	c.lastPrefixHash = result.PrefixHash
 	c.lastHintPresent = result.HintPresent
+	surfaceStats.observed++
+	surfaceStats.lastPrefixHash = result.PrefixHash
+	surfaceStats.lastHintPresent = result.HintPresent
 	if !in.Eligible || key == "" || result.PrefixHash == "" {
 		return result
 	}
 
 	c.pruneLocked(now)
 	c.eligible++
+	surfaceStats.eligible++
 	if item, ok := c.entries[key]; ok && now.Sub(item.updatedAt) <= c.ttl {
 		result.Reused = true
 		c.reused++
 		c.estimatedReadTokens += int64(result.PrefixTokens)
+		surfaceStats.reused++
+		surfaceStats.estimatedReadTokens += int64(result.PrefixTokens)
 		c.entries[key] = entry{prefixHash: result.PrefixHash, prefixTokens: result.PrefixTokens, updatedAt: now}
 		return result
 	}
 
 	c.entries[key] = entry{prefixHash: result.PrefixHash, prefixTokens: result.PrefixTokens, updatedAt: now}
 	c.estimatedWriteTokens += int64(result.PrefixTokens)
+	surfaceStats.estimatedWriteTokens += int64(result.PrefixTokens)
 	c.pruneLocked(now)
 	return result
 }
@@ -147,10 +179,53 @@ func (c *Cache) Stats() Stats {
 		Entries:              int64(len(c.entries)),
 		LastPrefixHash:       c.lastPrefixHash,
 		LastHintPresent:      c.lastHintPresent,
+		BySurface:            c.surfaceSnapshotLocked(),
 	}
 	c.mu.Unlock()
 	if out.Eligible > 0 {
 		out.ReuseRate = round2(float64(out.Reused) * 100 / float64(out.Eligible))
+	}
+	return out
+}
+
+func (c *Cache) surfaceStatsLocked(surface string) *surfaceCounters {
+	surface = normalizeSurface(surface)
+	if c.bySurface == nil {
+		c.bySurface = map[string]*surfaceCounters{}
+	}
+	stats := c.bySurface[surface]
+	if stats == nil {
+		stats = &surfaceCounters{}
+		c.bySurface[surface] = stats
+	}
+	return stats
+}
+
+func (c *Cache) surfaceSnapshotLocked() map[string]SurfaceStats {
+	if len(c.bySurface) == 0 {
+		return nil
+	}
+	out := make(map[string]SurfaceStats, len(c.bySurface))
+	for surface, stats := range c.bySurface {
+		if stats == nil {
+			continue
+		}
+		item := SurfaceStats{
+			Observed:             stats.observed,
+			Eligible:             stats.eligible,
+			Reused:               stats.reused,
+			EstimatedReadTokens:  stats.estimatedReadTokens,
+			EstimatedWriteTokens: stats.estimatedWriteTokens,
+			LastPrefixHash:       stats.lastPrefixHash,
+			LastHintPresent:      stats.lastHintPresent,
+		}
+		if item.Eligible > 0 {
+			item.ReuseRate = round2(float64(item.Reused) * 100 / float64(item.Eligible))
+		}
+		out[surface] = item
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -179,6 +254,14 @@ func Key(in Observation) string {
 	writePart(h, prefixHash)
 	writePart(h, strings.TrimSpace(in.Hint))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func normalizeSurface(surface string) string {
+	surface = strings.ToLower(strings.TrimSpace(surface))
+	if surface == "" {
+		return "unknown"
+	}
+	return surface
 }
 
 func (c *Cache) pruneLocked(now time.Time) {

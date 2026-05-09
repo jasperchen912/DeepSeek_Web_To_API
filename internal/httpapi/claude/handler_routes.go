@@ -9,6 +9,7 @@ import (
 	"DeepSeek_Web_To_API/internal/chathistory"
 	"DeepSeek_Web_To_API/internal/config"
 	dsprotocol "DeepSeek_Web_To_API/internal/deepseek/protocol"
+	"DeepSeek_Web_To_API/internal/promptcache"
 	"DeepSeek_Web_To_API/internal/util"
 )
 
@@ -22,6 +23,7 @@ type Handler struct {
 	OpenAI OpenAIChatRunner
 
 	ChatHistory *chathistory.Store
+	PromptCache *promptcache.Cache
 }
 
 func (h *Handler) compatStripReferenceMarkers() bool {
