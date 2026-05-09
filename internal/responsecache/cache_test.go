@@ -245,6 +245,16 @@ func TestRequestBypassSkipsCache(t *testing.T) {
 	if got := atomic.LoadInt32(&calls); got != 2 {
 		t.Fatalf("expected bypass to call handler twice, got %d", got)
 	}
+	stats := cache.Stats()
+	if got := stats["misses"]; got != int64(2) {
+		t.Fatalf("expected bypass misses to be counted, got %v", got)
+	}
+	if got := stats["uncacheable_request_no_cache"]; got != int64(2) {
+		t.Fatalf("expected request_no_cache reason to be counted, got %v", got)
+	}
+	if got := stats["uncacheable_misses"]; got != int64(2) {
+		t.Fatalf("expected uncacheable misses to include bypasses, got %v", got)
+	}
 }
 
 func TestStreamRequestSkipsCache(t *testing.T) {

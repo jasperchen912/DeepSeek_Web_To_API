@@ -41,6 +41,21 @@ func TestCollectStreamTextOnly(t *testing.T) {
 	}
 }
 
+func TestCollectStreamExtractsPromptCacheUsage(t *testing.T) {
+	resp := makeHTTPResponse(
+		"data: {\"p\":\"response/content\",\"v\":\"Hello\"}\n" +
+			"data: {\"usage\":{\"prompt_cache_hit_tokens\":128,\"prompt_cache_miss_tokens\":16}}\n" +
+			"data: [DONE]\n",
+	)
+	result := CollectStream(resp, false, false)
+	if !result.PromptCacheUsage.HasHit || result.PromptCacheUsage.HitTokens != 128 {
+		t.Fatalf("expected prompt cache hit tokens, got %#v", result.PromptCacheUsage)
+	}
+	if !result.PromptCacheUsage.HasMiss || result.PromptCacheUsage.MissTokens != 16 {
+		t.Fatalf("expected prompt cache miss tokens, got %#v", result.PromptCacheUsage)
+	}
+}
+
 func TestCollectStreamHandlesLongSingleSSELine(t *testing.T) {
 	payload := strings.Repeat("x", 2*1024*1024+4096)
 	resp := makeHTTPResponse(makeLargeContentSSEBody(t, payload))

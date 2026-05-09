@@ -44,6 +44,7 @@ type responsesStreamRuntime struct {
 	text                  strings.Builder
 	visibleText           strings.Builder
 	responseMessageID     int
+	promptCacheUsage      sse.PromptCacheUsage
 	streamToolCallIDs     map[int]string
 	functionItemIDs       map[int]string
 	functionOutputIDs     map[int]int
@@ -162,6 +163,7 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 	s.finalText = finalText
 	s.finalFinishReason = finishReason
 	s.finalUsage = openaifmt.BuildChatUsage(s.finalPrompt, finalThinking, finalText)
+	openaifmt.ApplyPromptCacheUsage(s.finalUsage, s.promptCacheUsage.HitTokens, s.promptCacheUsage.MissTokens, s.promptCacheUsage.HasHit, s.promptCacheUsage.HasMiss)
 
 	if s.bufferToolContent {
 		s.processToolStreamEvents(toolstream.Flush(&s.sieve, s.toolNames), true, true)
@@ -233,6 +235,7 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 	if parsed.ResponseMessageID > 0 {
 		s.responseMessageID = parsed.ResponseMessageID
 	}
+	s.promptCacheUsage.Merge(parsed.PromptCacheUsage)
 	if parsed.ContentFilter || parsed.ErrorMessage != "" {
 		return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReason("content_filter")}
 	}

@@ -49,6 +49,7 @@ type chatStreamRuntime struct {
 	rawText               strings.Builder
 	text                  strings.Builder
 	responseMessageID     int
+	promptCacheUsage      sse.PromptCacheUsage
 
 	finalThinking     string
 	finalText         string
@@ -306,6 +307,7 @@ func (s *chatStreamRuntime) finalize(finishReason string, deferEmptyOutput bool)
 		return true
 	}
 	usage := openaifmt.BuildChatUsageForModel(s.model, s.finalPrompt, finalThinking, finalText, s.refFileTokens)
+	openaifmt.ApplyPromptCacheUsage(usage, s.promptCacheUsage.HitTokens, s.promptCacheUsage.MissTokens, s.promptCacheUsage.HasHit, s.promptCacheUsage.HasMiss)
 	s.finalFinishReason = finishReason
 	s.finalUsage = usage
 	s.sendChunk(openaifmt.BuildChatStreamChunk(
@@ -326,6 +328,7 @@ func (s *chatStreamRuntime) onParsed(parsed sse.LineResult) streamengine.ParsedD
 	if parsed.ResponseMessageID > 0 {
 		s.responseMessageID = parsed.ResponseMessageID
 	}
+	s.promptCacheUsage.Merge(parsed.PromptCacheUsage)
 	if parsed.ContentFilter {
 		if strings.TrimSpace(s.text.String()) == "" {
 			return streamengine.ParsedDecision{Stop: true, StopReason: streamengine.StopReason("content_filter")}

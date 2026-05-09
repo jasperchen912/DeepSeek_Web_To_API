@@ -93,6 +93,40 @@ func TestGetOrCreateCachesAndCollapsesInflight(t *testing.T) {
 	}
 }
 
+func TestGetOrCreateRefreshesTTLOnHit(t *testing.T) {
+	cache := New(Options{TTL: time.Minute, MaxEntries: 10})
+	now := time.Unix(1000, 0)
+	cache.now = func() time.Time { return now }
+	creates := 0
+	create := func(ctx context.Context) (Value, error) {
+		_ = ctx
+		creates++
+		return Value{SessionID: "session-id", Actor: "account:a"}, nil
+	}
+
+	if _, result, err := cache.GetOrCreate(context.Background(), "key", create); err != nil || result.Hit {
+		t.Fatalf("expected initial miss, got result=%#v err=%v", result, err)
+	}
+	now = now.Add(30 * time.Second)
+	if _, result, err := cache.GetOrCreate(context.Background(), "key", create); err != nil || !result.Hit {
+		t.Fatalf("expected hit to refresh TTL, got result=%#v err=%v", result, err)
+	}
+	now = now.Add(45 * time.Second)
+	if _, result, err := cache.GetOrCreate(context.Background(), "key", create); err != nil || !result.Hit {
+		t.Fatalf("expected refreshed entry to remain valid, got result=%#v err=%v", result, err)
+	}
+	if creates != 1 {
+		t.Fatalf("creates=%d want=1 before refreshed TTL expires", creates)
+	}
+	now = now.Add(61 * time.Second)
+	if _, result, err := cache.GetOrCreate(context.Background(), "key", create); err != nil || result.Hit {
+		t.Fatalf("expected miss after refreshed TTL expires, got result=%#v err=%v", result, err)
+	}
+	if creates != 2 {
+		t.Fatalf("creates=%d want=2 after refreshed TTL expires", creates)
+	}
+}
+
 func TestInvalidateSessionIDRemovesMatchingEntries(t *testing.T) {
 	cache := New(Options{TTL: time.Hour, MaxEntries: 10})
 	cache.Store("a", Value{SessionID: "session-id", Actor: "account:a"})

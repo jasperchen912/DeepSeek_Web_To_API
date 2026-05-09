@@ -157,7 +157,13 @@ func (c *Cache) Wrap(resolver CallerResolver, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !CacheableRequest(r) {
+		if !cacheableRequestEndpoint(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if reason := requestBypassReason(r); reason != "" {
+			c.recordMiss()
+			c.recordUncacheable(reason)
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -308,10 +314,11 @@ func requestBodyStreamEnabled(body []byte) bool {
 }
 
 func CacheableRequest(r *http.Request) bool {
+	return cacheableRequestEndpoint(r) && requestBypassReason(r) == ""
+}
+
+func cacheableRequestEndpoint(r *http.Request) bool {
 	if r == nil || r.URL == nil || r.Method != http.MethodPost {
-		return false
-	}
-	if requestForcesBypass(r) {
 		return false
 	}
 	path := canonicalRequestPath(r.URL.Path)
@@ -380,7 +387,7 @@ func cacheKeyShouldNormalizeJSON(r *http.Request) bool {
 	if isJSONContentType(r.Header.Get("Content-Type")) {
 		return true
 	}
-	return CacheableRequest(r)
+	return cacheableRequestEndpoint(r)
 }
 
 func isJSONContentType(raw string) bool {
@@ -1142,18 +1149,21 @@ func (w *captureResponseWriter) entry() Entry {
 	}
 }
 
-func requestForcesBypass(r *http.Request) bool {
+func requestBypassReason(r *http.Request) string {
 	if r == nil {
-		return false
+		return ""
 	}
 	cacheControl := r.Header.Get("Cache-Control")
-	if hasHeaderToken(cacheControl, "no-cache") || hasHeaderToken(cacheControl, "no-store") {
-		return true
+	if hasHeaderToken(cacheControl, "no-store") {
+		return "request_no_store"
+	}
+	if hasHeaderToken(cacheControl, "no-cache") {
+		return "request_no_cache"
 	}
 	if strings.EqualFold(requestHeaderValue(r.Header, "X-DeepSeek-Web-To-API-Cache-Control", "X-Ds2-Cache-Control"), "bypass") {
-		return true
+		return "request_bypass"
 	}
-	return false
+	return ""
 }
 
 func hasHeaderToken(raw, token string) bool {

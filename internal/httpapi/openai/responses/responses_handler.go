@@ -254,6 +254,7 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 
 	responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, sanitizedThinking, sanitizedText, textParsed.Calls, toolsRaw)
 	addRefFileTokensToUsage(responseObj, refFileTokens)
+	applyPromptCacheUsageToObject(responseObj, result.PromptCacheUsage)
 	h.getResponseStore().put(owner, responseID, responseObj)
 	writeJSON(w, http.StatusOK, responseObj)
 }

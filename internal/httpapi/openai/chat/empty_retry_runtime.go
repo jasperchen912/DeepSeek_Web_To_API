@@ -27,6 +27,7 @@ type chatNonStreamResult struct {
 	body                  map[string]any
 	finishReason          string
 	responseMessageID     int
+	promptCacheUsage      sse.PromptCacheUsage
 }
 
 func (h *Handler) handleNonStreamWithRetry(w http.ResponseWriter, ctx context.Context, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, completionID, model, finalPrompt string, refFileTokens int, thinkingEnabled, exposeReasoning, searchEnabled bool, toolNames []string, toolsRaw any, requireToolCall bool, historySession *chatHistorySession, activeSessionID *string) {
@@ -51,6 +52,7 @@ func (h *Handler) handleNonStreamWithRetry(w http.ResponseWriter, ctx context.Co
 		result.detectedCalls = len(detected.Calls)
 		result.body = openaifmt.BuildChatCompletionWithToolCallsVisibility(completionID, model, usagePrompt, result.thinking, result.text, detected.Calls, toolsRaw, exposeReasoning)
 		addRefFileTokensToUsage(result.body, refFileTokens)
+		applyPromptCacheUsageToObject(result.body, result.promptCacheUsage)
 		result.finishReason = chatFinishReason(result.body)
 		if !shouldRetryChatNonStream(result, attempts) {
 			h.finishChatNonStreamResult(w, result, attempts, usagePrompt, refFileTokens, requireToolCall, historySession)
@@ -93,6 +95,7 @@ func (h *Handler) collectChatNonStreamAttempt(w http.ResponseWriter, resp *http.
 	detected := detectAssistantToolCalls(result.Text, finalText, result.Thinking, result.ToolDetectionThinking, toolNames)
 	respBody := openaifmt.BuildChatCompletionWithToolCallsVisibility(completionID, model, usagePrompt, finalThinking, finalText, detected.Calls, toolsRaw, exposeReasoning)
 	addRefFileTokensToUsage(respBody, refFileTokens)
+	applyPromptCacheUsageToObject(respBody, result.PromptCacheUsage)
 	return chatNonStreamResult{
 		rawThinking:           result.Thinking,
 		rawText:               result.Text,
@@ -104,6 +107,7 @@ func (h *Handler) collectChatNonStreamAttempt(w http.ResponseWriter, resp *http.
 		body:                  respBody,
 		finishReason:          chatFinishReason(respBody),
 		responseMessageID:     result.ResponseMessageID,
+		promptCacheUsage:      result.PromptCacheUsage,
 	}, true
 }
 
@@ -126,7 +130,12 @@ func (h *Handler) finishChatNonStreamResult(w http.ResponseWriter, result chatNo
 		return
 	}
 	if historySession != nil {
-		historySession.success(http.StatusOK, result.thinking, result.text, result.finishReason, openaifmt.BuildChatUsageForModel("", usagePrompt, result.thinking, result.text, refFileTokens))
+		usage, _ := result.body["usage"].(map[string]any)
+		if usage == nil {
+			usage = openaifmt.BuildChatUsageForModel("", usagePrompt, result.thinking, result.text, refFileTokens)
+			openaifmt.ApplyPromptCacheUsage(usage, result.promptCacheUsage.HitTokens, result.promptCacheUsage.MissTokens, result.promptCacheUsage.HasHit, result.promptCacheUsage.HasMiss)
+		}
+		historySession.success(http.StatusOK, result.thinking, result.text, result.finishReason, usage)
 	}
 	writeJSON(w, http.StatusOK, result.body)
 	source := "first_attempt"

@@ -70,6 +70,7 @@ type Cache struct {
 	mu       sync.Mutex
 	ttl      time.Duration
 	maxItems int
+	now      func() time.Time
 	entries  map[string]entry
 	inflight map[string]*call
 
@@ -93,6 +94,7 @@ func New(opts Options) *Cache {
 	return &Cache{
 		ttl:      ttl,
 		maxItems: maxItems,
+		now:      time.Now,
 		entries:  map[string]entry{},
 		inflight: map[string]*call{},
 	}
@@ -108,10 +110,12 @@ func (c *Cache) GetOrCreate(ctx context.Context, key string, create func(context
 		return normalizeValue(value), Result{Key: key}, err
 	}
 
-	now := time.Now()
+	now := c.currentTime()
 	c.mu.Lock()
 	c.pruneLocked(now)
 	if item, ok := c.entries[key]; ok && now.Sub(item.updatedAt) <= c.ttl && validValue(item.value) {
+		item.updatedAt = now
+		c.entries[key] = item
 		c.hits++
 		value := item.value
 		c.mu.Unlock()
@@ -137,9 +141,10 @@ func (c *Cache) GetOrCreate(ctx context.Context, key string, create func(context
 
 	c.mu.Lock()
 	if err == nil && validValue(value) {
-		c.entries[key] = entry{value: value, updatedAt: time.Now()}
+		now := c.currentTime()
+		c.entries[key] = entry{value: value, updatedAt: now}
 		c.stores++
-		c.pruneLocked(time.Now())
+		c.pruneLocked(now)
 	}
 	current.value = value
 	current.err = err
@@ -156,10 +161,11 @@ func (c *Cache) Store(key string, value Value) {
 	if c == nil || key == "" || !validValue(value) {
 		return
 	}
+	now := c.currentTime()
 	c.mu.Lock()
-	c.entries[key] = entry{value: value, updatedAt: time.Now()}
+	c.entries[key] = entry{value: value, updatedAt: now}
 	c.stores++
-	c.pruneLocked(time.Now())
+	c.pruneLocked(now)
 	c.mu.Unlock()
 }
 
@@ -223,8 +229,9 @@ func (c *Cache) Stats() Stats {
 	if c == nil {
 		return Stats{}
 	}
+	now := c.currentTime()
 	c.mu.Lock()
-	c.pruneLocked(time.Now())
+	c.pruneLocked(now)
 	out := Stats{
 		Hits:               c.hits,
 		Misses:             c.misses,
@@ -236,6 +243,13 @@ func (c *Cache) Stats() Stats {
 	}
 	c.mu.Unlock()
 	return out
+}
+
+func (c *Cache) currentTime() time.Time {
+	if c == nil || c.now == nil {
+		return time.Now()
+	}
+	return c.now()
 }
 
 func (c *Cache) pruneLocked(now time.Time) {

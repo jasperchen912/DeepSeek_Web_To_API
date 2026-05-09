@@ -157,5 +157,6 @@ func (s *responsesStreamRuntime) buildCompletedResponseObject(finalThinking, fin
 	if s.refFileTokens > 0 {
 		addRefFileTokensToUsage(obj, s.refFileTokens)
 	}
+	applyPromptCacheUsageToObject(obj, s.promptCacheUsage)
 	return obj
 }

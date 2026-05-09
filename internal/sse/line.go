@@ -14,6 +14,7 @@ type LineResult struct {
 	ToolDetectionThinkingParts []ContentPart
 	NextType                   string
 	ResponseMessageID          int
+	PromptCacheUsage           PromptCacheUsage
 }
 
 // ParseDeepSeekContentLine centralizes one-line DeepSeek SSE parsing for both
@@ -55,6 +56,7 @@ func ParseDeepSeekContentLine(raw []byte, thinkingEnabled bool, currentType stri
 	detectionThinkingParts = filterLeakedContentFilterParts(detectionThinkingParts)
 	var respMsgID int
 	observeResponseMessageID(chunk, &respMsgID)
+	promptCacheUsage := ExtractPromptCacheUsage(chunk)
 	return LineResult{
 		Parsed:                     true,
 		Stop:                       finished,
@@ -62,5 +64,6 @@ func ParseDeepSeekContentLine(raw []byte, thinkingEnabled bool, currentType stri
 		ToolDetectionThinkingParts: detectionThinkingParts,
 		NextType:                   nextType,
 		ResponseMessageID:          respMsgID,
+		PromptCacheUsage:           promptCacheUsage,
 	}
 }

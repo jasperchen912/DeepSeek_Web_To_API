@@ -162,6 +162,41 @@ func TestBuildChatUsageIncludesOpenClawAliasesAndDetails(t *testing.T) {
 	}
 }
 
+func TestApplyPromptCacheUsagePreservesEstimatedTotals(t *testing.T) {
+	usage := BuildChatUsageForModel("deepseek-v4-flash", "prompt", "", "answer", 0)
+	total := usage["total_tokens"]
+
+	ApplyPromptCacheUsage(usage, 12, 34, true, true)
+
+	if usage["total_tokens"] != total {
+		t.Fatalf("did not expect total_tokens to change, got %#v want %#v", usage["total_tokens"], total)
+	}
+	if usage["prompt_cache_hit_tokens"] != 12 || usage["prompt_cache_miss_tokens"] != 34 {
+		t.Fatalf("expected DeepSeek prompt cache fields, got %#v", usage)
+	}
+	details, _ := usage["prompt_tokens_details"].(map[string]any)
+	if details["cached_tokens"] != 12 {
+		t.Fatalf("expected cached_tokens from upstream hit tokens, got %#v", details)
+	}
+	if usage["cacheRead"] != 12 || usage["cacheWrite"] != 0 {
+		t.Fatalf("expected cacheRead only, got cacheRead=%#v cacheWrite=%#v", usage["cacheRead"], usage["cacheWrite"])
+	}
+}
+
+func TestApplyPromptCacheUsageAddsResponsesInputDetails(t *testing.T) {
+	usage := BuildResponsesUsageForModel("deepseek-v4-flash", "prompt", "", "answer", 0)
+
+	ApplyPromptCacheUsage(usage, 7, 0, true, false)
+
+	details, _ := usage["input_tokens_details"].(map[string]any)
+	if details["cached_tokens"] != 7 {
+		t.Fatalf("expected input cached_tokens, got %#v", details)
+	}
+	if usage["prompt_cache_hit_tokens"] != 7 {
+		t.Fatalf("expected prompt_cache_hit_tokens, got %#v", usage)
+	}
+}
+
 func TestBuildResponseObjectWithToolCallsCoercesSchemaDeclaredStringArguments(t *testing.T) {
 	toolsRaw := []any{
 		map[string]any{

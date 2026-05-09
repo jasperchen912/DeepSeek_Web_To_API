@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"DeepSeek_Web_To_API/internal/chathistory"
@@ -56,31 +57,34 @@ type tokenWindowStats struct {
 }
 
 type overviewCacheStats struct {
-	Lookups                 int64   `json:"lookups"`
-	Hits                    int64   `json:"hits"`
-	Misses                  int64   `json:"misses"`
-	Stores                  int64   `json:"stores"`
-	HitRate                 float64 `json:"hit_rate"`
-	MissRate                float64 `json:"miss_rate"`
-	CacheableLookups        int64   `json:"cacheable_lookups"`
-	CacheableMisses         int64   `json:"cacheable_misses"`
-	CacheableHitRate        float64 `json:"cacheable_hit_rate"`
-	CacheableMissRate       float64 `json:"cacheable_miss_rate"`
-	UncacheableMisses       int64   `json:"uncacheable_misses"`
-	MemoryHits              int64   `json:"memory_hits"`
-	DiskHits                int64   `json:"disk_hits"`
-	UncacheableStatusNon2xx int64   `json:"uncacheable_status_non_2xx"`
-	UncacheableEmptyBody    int64   `json:"uncacheable_empty_body"`
-	UncacheableOversized    int64   `json:"uncacheable_oversized_response"`
-	UncacheableNoStore      int64   `json:"uncacheable_response_no_store"`
-	UncacheableSetCookie    int64   `json:"uncacheable_set_cookie"`
-	MemoryItems             int64   `json:"memory_items"`
-	MemoryBytes             int64   `json:"memory_bytes"`
-	MemoryMaxBytes          int64   `json:"memory_max_bytes"`
-	MemoryTTLSeconds        int64   `json:"memory_ttl_seconds"`
-	DiskMaxBytes            int64   `json:"disk_max_bytes"`
-	DiskTTLSeconds          int64   `json:"disk_ttl_seconds"`
-	Compression             string  `json:"compression,omitempty"`
+	Lookups                 int64            `json:"lookups"`
+	Hits                    int64            `json:"hits"`
+	Misses                  int64            `json:"misses"`
+	Stores                  int64            `json:"stores"`
+	HitRate                 float64          `json:"hit_rate"`
+	MissRate                float64          `json:"miss_rate"`
+	CacheableLookups        int64            `json:"cacheable_lookups"`
+	CacheableMisses         int64            `json:"cacheable_misses"`
+	CacheableHitRate        float64          `json:"cacheable_hit_rate"`
+	CacheableMissRate       float64          `json:"cacheable_miss_rate"`
+	UncacheableMisses       int64            `json:"uncacheable_misses"`
+	UncacheableReasons      map[string]int64 `json:"uncacheable_reasons,omitempty"`
+	MemoryHits              int64            `json:"memory_hits"`
+	DiskHits                int64            `json:"disk_hits"`
+	SingleflightHits        int64            `json:"singleflight_hits"`
+	InflightWaits           int64            `json:"inflight_waits"`
+	UncacheableStatusNon2xx int64            `json:"uncacheable_status_non_2xx"`
+	UncacheableEmptyBody    int64            `json:"uncacheable_empty_body"`
+	UncacheableOversized    int64            `json:"uncacheable_oversized_response"`
+	UncacheableNoStore      int64            `json:"uncacheable_response_no_store"`
+	UncacheableSetCookie    int64            `json:"uncacheable_set_cookie"`
+	MemoryItems             int64            `json:"memory_items"`
+	MemoryBytes             int64            `json:"memory_bytes"`
+	MemoryMaxBytes          int64            `json:"memory_max_bytes"`
+	MemoryTTLSeconds        int64            `json:"memory_ttl_seconds"`
+	DiskMaxBytes            int64            `json:"disk_max_bytes"`
+	DiskTTLSeconds          int64            `json:"disk_ttl_seconds"`
+	Compression             string           `json:"compression,omitempty"`
 }
 
 type overviewHistoryStats struct {
@@ -266,8 +270,11 @@ func (h *Handler) cacheStats() overviewCacheStats {
 		CacheableLookups:        cacheableLookups,
 		CacheableMisses:         cacheableMisses,
 		UncacheableMisses:       int64Stat(raw, "uncacheable_misses"),
+		UncacheableReasons:      uncacheableReasonStats(raw),
 		MemoryHits:              int64Stat(raw, "memory_hits"),
 		DiskHits:                int64Stat(raw, "disk_hits"),
+		SingleflightHits:        int64Stat(raw, "singleflight_hits"),
+		InflightWaits:           int64Stat(raw, "inflight_waits"),
 		UncacheableStatusNon2xx: int64Stat(raw, "uncacheable_status_non_2xx"),
 		UncacheableEmptyBody:    int64Stat(raw, "uncacheable_empty_body"),
 		UncacheableOversized:    int64Stat(raw, "uncacheable_oversized_response"),
@@ -290,6 +297,30 @@ func (h *Handler) cacheStats() overviewCacheStats {
 		stats.CacheableMissRate = round2(float64(cacheableMisses) * 100 / float64(cacheableLookups))
 	}
 	return stats
+}
+
+func uncacheableReasonStats(stats map[string]any) map[string]int64 {
+	if stats == nil {
+		return nil
+	}
+	out := map[string]int64{}
+	for key := range stats {
+		if key == "uncacheable_misses" || !strings.HasPrefix(key, "uncacheable_") {
+			continue
+		}
+		count := int64Stat(stats, key)
+		if count <= 0 {
+			continue
+		}
+		reason := strings.TrimPrefix(key, "uncacheable_")
+		if reason != "" {
+			out[reason] = count
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func int64Stat(stats map[string]any, key string) int64 {

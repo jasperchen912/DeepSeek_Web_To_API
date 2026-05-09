@@ -74,10 +74,14 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 			"stores":                     int64(1),
 			"cacheable_lookups":          int64(4),
 			"cacheable_misses":           int64(1),
-			"uncacheable_misses":         int64(1),
+			"uncacheable_misses":         int64(4),
 			"uncacheable_status_non_2xx": int64(1),
+			"uncacheable_stream_request": int64(2),
+			"uncacheable_missing_owner":  int64(1),
 			"memory_hits":                int64(2),
 			"disk_hits":                  int64(1),
+			"singleflight_hits":          int64(5),
+			"inflight_waits":             int64(6),
 			"memory_items":               2,
 			"memory_bytes":               int64(2048),
 			"memory_max_bytes":           int64(4096),
@@ -151,8 +155,11 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 	if body.Cost.Currency != pricingCurrency || body.Cost.TotalUSD <= 0 || body.Cost.PricingSource != pricingSourceURL {
 		t.Fatalf("unexpected cost breakdown: %#v", body.Cost)
 	}
-	if body.Cache.HitRate != 60 || body.Cache.MissRate != 40 || body.Cache.CacheableHitRate != 75 || body.Cache.CacheableMissRate != 25 || body.Cache.CacheableMisses != 1 || body.Cache.UncacheableMisses != 1 || body.Cache.MemoryHits != 2 || body.Cache.DiskHits != 1 {
+	if body.Cache.HitRate != 60 || body.Cache.MissRate != 40 || body.Cache.CacheableHitRate != 75 || body.Cache.CacheableMissRate != 25 || body.Cache.CacheableMisses != 1 || body.Cache.UncacheableMisses != 4 || body.Cache.MemoryHits != 2 || body.Cache.DiskHits != 1 || body.Cache.SingleflightHits != 5 || body.Cache.InflightWaits != 6 {
 		t.Fatalf("unexpected cache metrics: %#v", body.Cache)
+	}
+	if body.Cache.UncacheableReasons["stream_request"] != 2 || body.Cache.UncacheableReasons["missing_owner"] != 1 || body.Cache.UncacheableReasons["status_non_2xx"] != 1 {
+		t.Fatalf("unexpected uncacheable reason metrics: %#v", body.Cache.UncacheableReasons)
 	}
 	if body.SessionCache.Hits != 4 || body.SessionCache.InflightWaits != 1 || body.SessionCache.DisabledAutoDelete != 1 {
 		t.Fatalf("unexpected session cache metrics: %#v", body.SessionCache)

@@ -57,6 +57,16 @@ func TestParseDeepSeekContentLineIgnoresAccumulatedTokenUsageString(t *testing.T
 	}
 }
 
+func TestParseDeepSeekContentLineExtractsPromptCacheUsage(t *testing.T) {
+	res := ParseDeepSeekContentLine([]byte(`data: {"p":"response","o":"BATCH","v":[{"p":"token_usage","v":{"prompt_cache_hit_tokens":64,"prompt_cache_miss_tokens":"32"}},{"p":"quasi_status","v":"FINISHED"}]}`), false, "text")
+	if !res.PromptCacheUsage.HasHit || res.PromptCacheUsage.HitTokens != 64 {
+		t.Fatalf("expected prompt cache hit tokens, got %#v", res.PromptCacheUsage)
+	}
+	if !res.PromptCacheUsage.HasMiss || res.PromptCacheUsage.MissTokens != 32 {
+		t.Fatalf("expected prompt cache miss tokens, got %#v", res.PromptCacheUsage)
+	}
+}
+
 func TestParseDeepSeekContentLineErrorStops(t *testing.T) {
 	res := ParseDeepSeekContentLine([]byte(`data: {"error":"boom","accumulated_token_usage":123}`), false, "text")
 	if !res.Parsed || !res.Stop {

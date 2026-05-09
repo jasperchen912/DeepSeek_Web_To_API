@@ -820,3 +820,92 @@ func TestResponsesNonStreamUsageIgnoresPromptAndOutputTokenUsage(t *testing.T) {
 		t.Fatalf("expected total_tokens=input_tokens+output_tokens, usage=%#v", usage)
 	}
 }
+
+func TestChatNonStreamPreservesDeepSeekPromptCacheUsage(t *testing.T) {
+	h := &openAITestSurface{
+		Store: mockOpenAIConfig{wideInput: true},
+		Auth:  streamStatusAuthStub{},
+		DS: streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(
+			`data: {"p":"response/content","v":"ok"}`,
+			`data: {"p":"response","o":"BATCH","v":[{"p":"token_usage","v":{"prompt_tokens":999,"completion_tokens":999,"prompt_cache_hit_tokens":128,"prompt_cache_miss_tokens":64}},{"p":"quasi_status","v":"FINISHED"}]}`,
+		)},
+	}
+
+	reqBody := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer direct-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	newOpenAITestRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response failed: %v body=%s", err, rec.Body.String())
+	}
+	usage, _ := out["usage"].(map[string]any)
+	if usage == nil {
+		t.Fatalf("expected usage object, got %#v", out)
+	}
+	if got, _ := usage["completion_tokens"].(float64); int(got) == 999 {
+		t.Fatalf("expected upstream completion token estimate to remain ignored, usage=%#v", usage)
+	}
+	if got, _ := usage["prompt_cache_hit_tokens"].(float64); int(got) != 128 {
+		t.Fatalf("expected prompt_cache_hit_tokens=128, usage=%#v", usage)
+	}
+	if got, _ := usage["prompt_cache_miss_tokens"].(float64); int(got) != 64 {
+		t.Fatalf("expected prompt_cache_miss_tokens=64, usage=%#v", usage)
+	}
+	details, _ := usage["prompt_tokens_details"].(map[string]any)
+	if got, _ := details["cached_tokens"].(float64); int(got) != 128 {
+		t.Fatalf("expected cached_tokens=128, details=%#v", details)
+	}
+	if got, _ := usage["cacheRead"].(float64); int(got) != 128 {
+		t.Fatalf("expected cacheRead=128, usage=%#v", usage)
+	}
+}
+
+func TestResponsesStreamPreservesDeepSeekPromptCacheUsage(t *testing.T) {
+	h := &openAITestSurface{
+		Store: mockOpenAIConfig{wideInput: true},
+		Auth:  streamStatusAuthStub{},
+		DS: streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(
+			`data: {"p":"response/content","v":"ok"}`,
+			`data: {"usage":{"prompt_cache_hit_tokens":42,"prompt_cache_miss_tokens":9}}`,
+			`data: [DONE]`,
+		)},
+	}
+
+	reqBody := `{"model":"deepseek-v4-flash","input":"hi","stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer direct-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	newOpenAITestRouter(h).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	frames, done := parseSSEDataFrames(t, rec.Body.String())
+	if !done {
+		t.Fatalf("expected [DONE], body=%s", rec.Body.String())
+	}
+	last := frames[len(frames)-1]
+	resp, _ := last["response"].(map[string]any)
+	usage, _ := resp["usage"].(map[string]any)
+	if usage == nil {
+		t.Fatalf("expected usage object, response=%#v", resp)
+	}
+	if got, _ := usage["prompt_cache_hit_tokens"].(float64); int(got) != 42 {
+		t.Fatalf("expected prompt_cache_hit_tokens=42, usage=%#v", usage)
+	}
+	if got, _ := usage["prompt_cache_miss_tokens"].(float64); int(got) != 9 {
+		t.Fatalf("expected prompt_cache_miss_tokens=9, usage=%#v", usage)
+	}
+	details, _ := usage["input_tokens_details"].(map[string]any)
+	if got, _ := details["cached_tokens"].(float64); int(got) != 42 {
+		t.Fatalf("expected input cached_tokens=42, details=%#v", details)
+	}
+}

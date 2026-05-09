@@ -17,6 +17,7 @@ type CollectResult struct {
 	ContentFilter         bool
 	CitationLinks         map[int]string
 	ResponseMessageID     int
+	PromptCacheUsage      PromptCacheUsage
 }
 
 // CollectStream fully consumes a DeepSeek SSE response and separates
@@ -36,6 +37,7 @@ func CollectStream(resp *http.Response, thinkingEnabled bool, closeBody bool) Co
 	stopped := false
 	collector := newCitationLinkCollector()
 	responseMessageID := 0
+	var promptCacheUsage PromptCacheUsage
 	currentType := "text"
 	if thinkingEnabled {
 		currentType = "thinking"
@@ -45,6 +47,7 @@ func CollectStream(resp *http.Response, thinkingEnabled bool, closeBody bool) Co
 		if parsed && !done {
 			collector.ingestChunk(chunk)
 			observeResponseMessageID(chunk, &responseMessageID)
+			promptCacheUsage.Merge(ExtractPromptCacheUsage(chunk))
 		}
 		if done {
 			return false
@@ -89,6 +92,7 @@ func CollectStream(resp *http.Response, thinkingEnabled bool, closeBody bool) Co
 		ContentFilter:         contentFilter,
 		CitationLinks:         collector.build(),
 		ResponseMessageID:     responseMessageID,
+		PromptCacheUsage:      promptCacheUsage,
 	}
 }
 

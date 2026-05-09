@@ -1,5 +1,10 @@
 package chat
 
+import (
+	openaifmt "DeepSeek_Web_To_API/internal/format/openai"
+	"DeepSeek_Web_To_API/internal/sse"
+)
+
 // addRefFileTokensToUsage adds inline-uploaded file token estimates to an existing
 // usage map inside a response object. This keeps the token accounting aware of file
 // content that the upstream model processes but that is not part of the prompt text.
@@ -32,4 +37,12 @@ func addRefFileTokensToUsage(obj map[string]any, refFileTokens int) {
 			usage["input"] = n + refFileTokens
 		}
 	}
+}
+
+func applyPromptCacheUsageToObject(obj map[string]any, cacheUsage sse.PromptCacheUsage) {
+	if obj == nil {
+		return
+	}
+	usage, _ := obj["usage"].(map[string]any)
+	openaifmt.ApplyPromptCacheUsage(usage, cacheUsage.HitTokens, cacheUsage.MissTokens, cacheUsage.HasHit, cacheUsage.HasMiss)
 }

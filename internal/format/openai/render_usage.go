@@ -52,3 +52,39 @@ func BuildResponsesUsageForModel(model, finalPrompt, finalThinking, finalText st
 func BuildResponsesUsage(finalPrompt, finalThinking, finalText string) map[string]any {
 	return BuildResponsesUsageForModel("", finalPrompt, finalThinking, finalText, 0)
 }
+
+func ApplyPromptCacheUsage(usage map[string]any, hitTokens, missTokens int, hasHit, hasMiss bool) {
+	if usage == nil || (!hasHit && !hasMiss) {
+		return
+	}
+	if hasHit {
+		if hitTokens < 0 {
+			hitTokens = 0
+		}
+		usage["prompt_cache_hit_tokens"] = hitTokens
+		if _, ok := usage["cacheRead"]; ok {
+			usage["cacheRead"] = hitTokens
+		}
+		if _, ok := usage["prompt_tokens"]; ok {
+			setUsageDetail(usage, "prompt_tokens_details", "cached_tokens", hitTokens)
+		}
+		if _, ok := usage["input_tokens"]; ok {
+			setUsageDetail(usage, "input_tokens_details", "cached_tokens", hitTokens)
+		}
+	}
+	if hasMiss {
+		if missTokens < 0 {
+			missTokens = 0
+		}
+		usage["prompt_cache_miss_tokens"] = missTokens
+	}
+}
+
+func setUsageDetail(usage map[string]any, parentKey, childKey string, value int) {
+	details, _ := usage[parentKey].(map[string]any)
+	if details == nil {
+		details = map[string]any{}
+		usage[parentKey] = details
+	}
+	details[childKey] = value
+}

@@ -371,6 +371,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 	}
 	respBody := openaifmt.BuildChatCompletionWithToolCallsVisibility(completionID, model, finalPrompt, finalThinking, finalText, detected.Calls, toolsRaw, exposeReasoning)
 	addRefFileTokensToUsage(respBody, refFileTokens)
+	applyPromptCacheUsageToObject(respBody, result.PromptCacheUsage)
 	finishReason := "stop"
 	if choices, ok := respBody["choices"].([]map[string]any); ok && len(choices) > 0 {
 		if fr, _ := choices[0]["finish_reason"].(string); strings.TrimSpace(fr) != "" {
@@ -378,7 +379,8 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		}
 	}
 	if historySession != nil {
-		historySession.success(http.StatusOK, finalThinking, finalText, finishReason, openaifmt.BuildChatUsageForModel(model, finalPrompt, finalThinking, finalText, refFileTokens))
+		usage, _ := respBody["usage"].(map[string]any)
+		historySession.success(http.StatusOK, finalThinking, finalText, finishReason, usage)
 	}
 	writeJSON(w, http.StatusOK, respBody)
 }

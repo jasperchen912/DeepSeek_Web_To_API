@@ -86,6 +86,50 @@ function tokenWindowTotals(metrics, key) {
     return metrics?.token_windows?.[key]?.totals || {}
 }
 
+const UNCACHEABLE_REASON_LABELS = {
+    stream_request: '流式请求',
+    stream_response: '流式响应',
+    missing_owner: '缺少调用方',
+    oversized_request: '请求过大',
+    oversized_response: '响应过大',
+    status_non_2xx: '非 2xx',
+    empty_body: '空响应',
+    response_no_store: 'no-store',
+    set_cookie: 'Set-Cookie',
+    request_no_cache: '请求 no-cache',
+    request_no_store: '请求 no-store',
+    request_bypass: '主动绕过',
+    request_body_read_error: '请求体读取失败',
+    upstream_interrupted: '上游中断',
+    store_failed: '写入失败',
+}
+
+function reasonLabel(reason) {
+    const key = String(reason || '').trim()
+    if (!key) return '未知原因'
+    return UNCACHEABLE_REASON_LABELS[key] || key.replaceAll('_', ' ')
+}
+
+function responseCacheUncacheableReasons(cache) {
+    const reasonMap = cache?.uncacheable_reasons && typeof cache.uncacheable_reasons === 'object'
+        ? cache.uncacheable_reasons
+        : {}
+    const rows = new Map()
+    Object.entries(reasonMap).forEach(([reason, count]) => {
+        const n = Number(count) || 0
+        if (reason && n > 0) rows.set(reason, n)
+    })
+    Object.entries(cache || {}).forEach(([key, count]) => {
+        if (!key.startsWith('uncacheable_') || key === 'uncacheable_misses') return
+        const reason = key.slice('uncacheable_'.length)
+        const n = Number(count) || 0
+        if (reason && n > 0 && !rows.has(reason)) rows.set(reason, n)
+    })
+    return Array.from(rows.entries())
+        .map(([reason, count]) => ({ reason, label: reasonLabel(reason), count }))
+        .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+}
+
 function loadStatusLabel(status) {
     if (status === 'critical') return '高负载'
     if (status === 'warn') return '偏高'
@@ -323,10 +367,12 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
     const cacheableLookups = Number(cache.cacheable_lookups) || cacheHits + cacheStores
     const cacheableMisses = Number(cache.cacheable_misses) || cacheStores
     const uncacheableMisses = Number(cache.uncacheable_misses) || 0
-    const totalCacheHitRate = Number(cache.hit_rate) || 0
     const cacheableHitRate = Number(cache.cacheable_hit_rate) || 0
     const cacheableMissRate = Number(cache.cacheable_miss_rate) || (cacheableLookups > 0 ? (cacheableMisses * 100) / cacheableLookups : 0)
     const uncacheableMissRate = cacheMisses > 0 ? (uncacheableMisses * 100) / cacheMisses : 0
+    const cacheSingleflightHits = Number(cache.singleflight_hits) || 0
+    const cacheInflightWaits = Number(cache.inflight_waits) || 0
+    const uncacheableReasonRows = responseCacheUncacheableReasons(cache).slice(0, 4)
     const currentInputPrefix = metrics.current_input_prefix || {}
     const prefixApplied = Number(currentInputPrefix.applied) || 0
     const prefixReused = Number(currentInputPrefix.reused) || 0
@@ -503,14 +549,27 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
                         <div className="overview-signal">
                             <span>缓存未命中率</span>
                             <strong>{formatPercent(cacheableMissRate)}</strong>
-                            <em>{formatNumber(cacheableMisses)} 写入 / 总查询命中 {formatPercent(totalCacheHitRate)}</em>
+                            <em>{formatNumber(cacheableMisses)} 写入 / 合并 {formatNumber(cacheSingleflightHits)}</em>
                         </div>
                         <div className="overview-signal">
                             <span>不可缓存未命中</span>
                             <strong>{formatPercent(uncacheableMissRate)}</strong>
-                            <em>{formatNumber(uncacheableMisses)} 不可存 / {formatNumber(cacheMisses)} 未命中</em>
+                            <em>{formatNumber(uncacheableMisses)} 不可存 / 等待 {formatNumber(cacheInflightWaits)}</em>
                         </div>
                     </div>
+                    {uncacheableReasonRows.length > 0 && (
+                        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2">
+                            {uncacheableReasonRows.map(item => (
+                                <div key={item.reason} className="rounded-lg border border-amber-100 bg-amber-50/70 px-3 py-2 min-w-0">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="min-w-0 truncate text-[11px] font-black text-amber-800">{item.label}</span>
+                                        <strong className="shrink-0 text-xs font-black text-amber-900">{formatNumber(item.count)}</strong>
+                                    </div>
+                                    <div className="mt-1 truncate text-[10px] font-bold text-amber-700/80">{item.reason}</div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
                 </div>
 
                 <div className="ops-panel p-4 min-h-[310px]">
