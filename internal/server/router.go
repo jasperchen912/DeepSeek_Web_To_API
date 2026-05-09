@@ -28,7 +28,9 @@ import (
 	"DeepSeek_Web_To_API/internal/httpapi/openai/responses"
 	"DeepSeek_Web_To_API/internal/httpapi/openai/shared"
 	"DeepSeek_Web_To_API/internal/httpapi/requestbody"
+	"DeepSeek_Web_To_API/internal/promptcache"
 	"DeepSeek_Web_To_API/internal/responsecache"
+	"DeepSeek_Web_To_API/internal/sessioncache"
 	"DeepSeek_Web_To_API/internal/webui"
 )
 
@@ -60,10 +62,15 @@ func NewApp() (*App, error) {
 	if err := chatHistoryStore.Err(); err != nil {
 		config.Logger.Warn("[chat_history] unavailable", "path", chatHistoryStore.Path(), "error", err)
 	}
+	protocolSessionCache := sessioncache.New(sessioncache.Options{
+		TTL:        store.SessionCacheTTL(),
+		MaxEntries: store.SessionCacheMaxEntries(),
+	})
+	protocolPromptCache := promptcache.New(promptcache.Options{})
 
 	modelsHandler := &shared.ModelsHandler{Store: store}
-	chatHandler := &chat.Handler{Store: store, Auth: resolver, DS: dsClient, ChatHistory: chatHistoryStore}
-	responsesHandler := &responses.Handler{Store: store, Auth: resolver, DS: dsClient, ChatHistory: chatHistoryStore}
+	chatHandler := &chat.Handler{Store: store, Auth: resolver, DS: dsClient, ChatHistory: chatHistoryStore, SessionCache: protocolSessionCache, PromptCache: protocolPromptCache}
+	responsesHandler := &responses.Handler{Store: store, Auth: resolver, DS: dsClient, ChatHistory: chatHistoryStore, SessionCache: protocolSessionCache, PromptCache: protocolPromptCache}
 	filesHandler := &files.Handler{Store: store, Auth: resolver, DS: dsClient, ChatHistory: chatHistoryStore}
 	embeddingsHandler := &embeddings.Handler{Store: store, Auth: resolver, DS: dsClient, ChatHistory: chatHistoryStore}
 	claudeHandler := &claude.Handler{Store: store, Auth: resolver, DS: dsClient, OpenAI: chatHandler, ChatHistory: chatHistoryStore}
@@ -77,7 +84,7 @@ func NewApp() (*App, error) {
 		DiskMaxBytes:   store.ResponseCacheDiskMaxBytes(),
 		OnHit:          responsesHandler.OnProtocolResponseCacheHit,
 	})
-	adminHandler := &admin.Handler{Store: store, Pool: pool, DS: dsClient, OpenAI: chatHandler, ChatHistory: chatHistoryStore, ResponseCache: protocolResponseCache}
+	adminHandler := &admin.Handler{Store: store, Pool: pool, DS: dsClient, OpenAI: chatHandler, ChatHistory: chatHistoryStore, ResponseCache: protocolResponseCache, SessionCache: protocolSessionCache, PromptCache: protocolPromptCache}
 	webuiHandler := webui.NewHandler(store.StaticAdminDir())
 
 	r := chi.NewRouter()

@@ -40,6 +40,7 @@ func NormalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 		return StandardRequest{}, err
 	}
 	finalPrompt, toolNames := BuildOpenAIPrompt(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled)
+	prefixInfo := AnalyzeOpenAIPromptPrefix(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled, responseModel)
 	if !toolPolicy.IsNone() {
 		toolNames = ensureToolDetectionEnabled(toolNames, req["tools"])
 		toolPolicy.Allowed = namesToSet(toolNames)
@@ -48,21 +49,27 @@ func NormalizeOpenAIChatRequest(store ConfigReader, req map[string]any, traceID 
 	refFileIDs := CollectOpenAIRefFileIDs(req)
 
 	return StandardRequest{
-		Surface:         "openai_chat",
-		RequestedModel:  strings.TrimSpace(model),
-		ResolvedModel:   resolvedModel,
-		ResponseModel:   responseModel,
-		Messages:        messagesRaw,
-		ToolsRaw:        req["tools"],
-		FinalPrompt:     finalPrompt,
-		ToolNames:       toolNames,
-		ToolChoice:      toolPolicy,
-		Stream:          util.ToBool(req["stream"]),
-		Thinking:        thinkingEnabled,
-		ExposeReasoning: exposeReasoning,
-		Search:          searchEnabled,
-		RefFileIDs:      refFileIDs,
-		PassThrough:     passThrough,
+		Surface:              "openai_chat",
+		RequestedModel:       strings.TrimSpace(model),
+		ResolvedModel:        resolvedModel,
+		ResponseModel:        responseModel,
+		Messages:             messagesRaw,
+		PromptTokenText:      finalPrompt,
+		PromptCacheHint:      promptCacheHintFromRequest(req),
+		PromptPrefixHash:     prefixInfo.Hash,
+		PromptPrefixTokens:   prefixInfo.PrefixTokens,
+		PromptTailTokens:     prefixInfo.TailTokens,
+		PromptPrefixEligible: prefixInfo.Eligible,
+		ToolsRaw:             req["tools"],
+		FinalPrompt:          finalPrompt,
+		ToolNames:            toolNames,
+		ToolChoice:           toolPolicy,
+		Stream:               util.ToBool(req["stream"]),
+		Thinking:             thinkingEnabled,
+		ExposeReasoning:      exposeReasoning,
+		Search:               searchEnabled,
+		RefFileIDs:           refFileIDs,
+		PassThrough:          passThrough,
 	}, nil
 }
 
@@ -104,6 +111,7 @@ func NormalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 		return StandardRequest{}, err
 	}
 	finalPrompt, toolNames := BuildOpenAIPrompt(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled)
+	prefixInfo := AnalyzeOpenAIPromptPrefix(messagesRaw, req["tools"], traceID, toolPolicy, thinkingEnabled, model)
 	if !toolPolicy.IsNone() {
 		toolNames = ensureToolDetectionEnabled(toolNames, req["tools"])
 		toolPolicy.Allowed = namesToSet(toolNames)
@@ -112,21 +120,27 @@ func NormalizeOpenAIResponsesRequest(store ConfigReader, req map[string]any, tra
 	refFileIDs := CollectOpenAIRefFileIDs(req)
 
 	return StandardRequest{
-		Surface:         "openai_responses",
-		RequestedModel:  model,
-		ResolvedModel:   resolvedModel,
-		ResponseModel:   model,
-		Messages:        messagesRaw,
-		ToolsRaw:        req["tools"],
-		FinalPrompt:     finalPrompt,
-		ToolNames:       toolNames,
-		ToolChoice:      toolPolicy,
-		Stream:          util.ToBool(req["stream"]),
-		Thinking:        thinkingEnabled,
-		ExposeReasoning: exposeReasoning,
-		Search:          searchEnabled,
-		RefFileIDs:      refFileIDs,
-		PassThrough:     passThrough,
+		Surface:              "openai_responses",
+		RequestedModel:       model,
+		ResolvedModel:        resolvedModel,
+		ResponseModel:        model,
+		Messages:             messagesRaw,
+		PromptTokenText:      finalPrompt,
+		PromptCacheHint:      promptCacheHintFromRequest(req),
+		PromptPrefixHash:     prefixInfo.Hash,
+		PromptPrefixTokens:   prefixInfo.PrefixTokens,
+		PromptTailTokens:     prefixInfo.TailTokens,
+		PromptPrefixEligible: prefixInfo.Eligible,
+		ToolsRaw:             req["tools"],
+		FinalPrompt:          finalPrompt,
+		ToolNames:            toolNames,
+		ToolChoice:           toolPolicy,
+		Stream:               util.ToBool(req["stream"]),
+		Thinking:             thinkingEnabled,
+		ExposeReasoning:      exposeReasoning,
+		Search:               searchEnabled,
+		RefFileIDs:           refFileIDs,
+		PassThrough:          passThrough,
 	}, nil
 }
 

@@ -35,6 +35,29 @@ func TestNormalizeOpenAIChatRequestToolChoiceNoneDisablesTools(t *testing.T) {
 	}
 }
 
+func TestNormalizeOpenAIChatRequestRecordsPromptCacheHintWithoutForwarding(t *testing.T) {
+	t.Parallel()
+
+	out, err := NormalizeOpenAIChatRequest(normalizeRequestTestConfig{}, map[string]any{
+		"model":            "deepseek-v4-flash",
+		"messages":         []any{map[string]any{"role": "system", "content": "stable"}, map[string]any{"role": "user", "content": "hello"}},
+		"prompt_cache_key": "conversation-a",
+	}, "")
+	if err != nil {
+		t.Fatalf("NormalizeOpenAIChatRequest error: %v", err)
+	}
+	if out.PromptCacheHint != "conversation-a" {
+		t.Fatalf("unexpected prompt cache hint: %q", out.PromptCacheHint)
+	}
+	if !out.PromptPrefixEligible || out.PromptPrefixHash == "" {
+		t.Fatalf("expected prompt prefix diagnostics, got %#v", out)
+	}
+	payload := out.CompletionPayload("session")
+	if _, ok := payload["prompt_cache_key"]; ok {
+		t.Fatalf("prompt_cache_key should not be forwarded: %#v", payload)
+	}
+}
+
 func TestNormalizeOpenAIChatRequestToolChoiceForcedLimitsToolPrompt(t *testing.T) {
 	t.Parallel()
 

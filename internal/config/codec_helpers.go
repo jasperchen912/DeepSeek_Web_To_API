@@ -17,6 +17,16 @@ func responseCacheConfigured(c ResponseCacheConfig) bool {
 		c.DiskMaxBytes > 0
 }
 
+func sessionCacheConfigured(c SessionCacheConfig) bool {
+	return c.Enabled != nil ||
+		c.TTLSeconds > 0 ||
+		c.MaxEntries > 0
+}
+
+func cacheConfigured(c CacheConfig) bool {
+	return responseCacheConfigured(c.Response) || sessionCacheConfigured(c.Session)
+}
+
 func cloneStringMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil

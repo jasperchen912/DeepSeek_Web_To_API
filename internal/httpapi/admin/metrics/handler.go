@@ -7,6 +7,8 @@ import (
 	"DeepSeek_Web_To_API/internal/chathistory"
 	"DeepSeek_Web_To_API/internal/currentinputmetrics"
 	openaihistory "DeepSeek_Web_To_API/internal/httpapi/openai/history"
+	"DeepSeek_Web_To_API/internal/promptcache"
+	"DeepSeek_Web_To_API/internal/sessioncache"
 )
 
 const overviewWindow = time.Minute
@@ -32,6 +34,8 @@ type overviewMetricsResponse struct {
 	Cost               costBreakdown                `json:"cost"`
 	Host               hostSnapshot                 `json:"host"`
 	Cache              overviewCacheStats           `json:"cache"`
+	SessionCache       sessioncache.Stats           `json:"session_cache"`
+	PromptCache        promptcache.Stats            `json:"prompt_cache"`
 	CurrentInputPrefix currentinputmetrics.Snapshot `json:"current_input_prefix"`
 	History            overviewHistoryStats         `json:"history"`
 	Pool               map[string]any               `json:"pool,omitempty"`
@@ -124,6 +128,8 @@ func (h *Handler) getOverviewMetrics(w http.ResponseWriter, _ *http.Request) {
 		Cost:               buildCostBreakdown(stats, now),
 		Host:               collectHostSnapshot(now),
 		Cache:              h.cacheStats(),
+		SessionCache:       h.sessionCacheStats(),
+		PromptCache:        h.promptCacheStats(),
 		CurrentInputPrefix: h.currentInputPrefixStats(),
 		History:            h.historyStats(),
 	}
@@ -216,6 +222,20 @@ func (h *Handler) historyStats() overviewHistoryStats {
 func (h *Handler) currentInputPrefixStats() currentinputmetrics.Snapshot {
 	currentinputmetrics.SetActiveStates(openaihistory.ActiveCurrentInputPrefixStates())
 	return currentinputmetrics.GetSnapshot()
+}
+
+func (h *Handler) sessionCacheStats() sessioncache.Stats {
+	if h.SessionCache == nil {
+		return sessioncache.Stats{}
+	}
+	return h.SessionCache.Stats()
+}
+
+func (h *Handler) promptCacheStats() promptcache.Stats {
+	if h.PromptCache == nil {
+		return promptcache.Stats{}
+	}
+	return h.PromptCache.Stats()
 }
 
 func (h *Handler) cacheStats() overviewCacheStats {

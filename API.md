@@ -12,7 +12,7 @@
 - 托管账号模式：token 命中 `config.json` 的 `keys` 后使用账号池。
 - 直通 token 模式：token 不在 `keys` 中时作为 DeepSeek token 直通。
 - 管理鉴权：`POST /admin/login` 获取 JWT，其余管理接口使用 `Authorization: Bearer <jwt>` 或管理密钥。
-- 缓存命中响应头：`X-DeepSeek-Web-To-API-Cache: memory|disk`、`X-DeepSeek-Web-To-API-Cache-Expires-At`。
+- 缓存命中响应头：`X-DeepSeek-Web-To-API-Cache: memory|disk|singleflight`、`X-DeepSeek-Web-To-API-Cache-Expires-At`。
 
 ## OpenAI 兼容接口
 
@@ -113,9 +113,13 @@ curl "http://127.0.0.1:5001/v1beta/models/gemini-2.5-pro:generateContent?key=you
 
 ## 缓存规则
 
-缓存覆盖 OpenAI Chat/Responses/Embeddings、Claude Messages/CountTokens、Gemini GenerateContent/StreamGenerateContent。请求键按调用方、协议路径、查询参数、影响输出的请求头和规范化 JSON 请求体隔离。
+缓存覆盖 OpenAI Chat/Responses/Embeddings、Claude Messages/CountTokens、Gemini GenerateContent/StreamGenerateContent。请求键按调用方、协议路径、查询参数、影响输出的规范化请求头和规范化 JSON 请求体隔离；常见协议别名路径、`Content-Type` 和 `Accept` 等等价形式会归一。同 key 并发未命中会合并为一次上游请求，其余请求等待并复用结果，响应头会标记 `singleflight`。
 
-以下场景不写入缓存：非 2xx、响应体过大、请求显式绕过、无法确定调用方、非缓存路径。
+以下场景不写入缓存：流式请求或流式响应、非 2xx、请求体或响应体过大、请求显式绕过、无法确定调用方、非缓存路径、响应 `Set-Cookie`、响应 `Cache-Control: no-store`。
+
+OpenAI Chat Completions 与 Responses 还会复用 DeepSeek `chat_session_id`。会话缓存按调用方、稳定 SessionKey、账号或直通 token hash、模型/model_type、thinking/search 和 API surface 隔离；默认开启，可通过 `cache.session.enabled=false` 关闭。它只复用远端 session 容器，不改变 prompt 组装，也不会把普通请求改成 `parent_message_id` 链式续写。若远端 session 新建后或缓存命中后立刻返回 not found/expired，会失效并重建一次。
+
+OpenAI Chat/Responses 会记录 prompt prefix cache 诊断指标：稳定 prefix hash、估算 prefix/tail tokens、是否在本地 tracker 中复用。请求体 `prompt_cache_key` 或请求头 `X-DeepSeek-Web-To-API-Prompt-Cache-Key` 可作为诊断 hint；该 hint 不转发 DeepSeek，不加入完整响应缓存 key，也不会让旧答案被复用。`usage.prompt_tokens_details.cached_tokens` 仍保持上游真实语义，当前不会写入本地估算值。
 
 显式绕过：
 

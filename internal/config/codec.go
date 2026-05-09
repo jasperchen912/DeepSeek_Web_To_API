@@ -40,7 +40,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		strings.TrimSpace(c.Storage.RawStreamSampleRoot) != "" {
 		m["storage"] = c.Storage
 	}
-	if responseCacheConfigured(c.Cache.Response) {
+	if cacheConfigured(c.Cache) {
 		m["cache"] = c.Cache
 	}
 	if c.Runtime.AccountMaxInflight > 0 || c.Runtime.AccountMaxQueue > 0 || c.Runtime.GlobalMaxInflight > 0 || c.Runtime.TokenRefreshIntervalHours > 0 {
@@ -177,7 +177,14 @@ func (c Config) Clone() Config {
 			HTTPTotalTimeoutSeconds: c.Server.HTTPTotalTimeoutSeconds,
 		},
 		Storage: c.Storage,
-		Cache:   c.Cache,
+		Cache: CacheConfig{
+			Response: c.Cache.Response,
+			Session: SessionCacheConfig{
+				Enabled:    cloneBoolPtr(c.Cache.Session.Enabled),
+				TTLSeconds: c.Cache.Session.TTLSeconds,
+				MaxEntries: c.Cache.Session.MaxEntries,
+			},
+		},
 		Runtime: c.Runtime,
 		Compat: CompatConfig{
 			WideInputStrictOutput: cloneBoolPtr(c.Compat.WideInputStrictOutput),

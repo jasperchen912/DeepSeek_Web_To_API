@@ -19,6 +19,7 @@ import (
 	"DeepSeek_Web_To_API/internal/httpapi/historycapture"
 	"DeepSeek_Web_To_API/internal/httpapi/openai/shared"
 	"DeepSeek_Web_To_API/internal/promptcompat"
+	"DeepSeek_Web_To_API/internal/sessioncache"
 	"DeepSeek_Web_To_API/internal/sse"
 	streamengine "DeepSeek_Web_To_API/internal/stream"
 )
@@ -135,8 +136,10 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recordCurrentInputMetrics(stdReq, currentInputFileDuration)
+	stdReq = shared.ObservePromptCache(h.PromptCache, r, a, stdReq, "responses")
 
-	sessionID, err := h.DS.CreateSession(r.Context(), a, 3)
+	sessionResolution, err := shared.ResolveDeepSeekSession(r.Context(), h.Store, h.SessionCache, h.DS, a, stdReq, "responses")
+	sessionID := sessionResolution.ID
 	if err != nil {
 		handleCreateSessionError(w, historySession, a, err)
 		return
@@ -148,6 +151,28 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 	payload := stdReq.CompletionPayload(sessionID)
 	resp, err := h.DS.CallCompletion(r.Context(), a, payload, pow, 3)
+	if nextSessionID := strings.TrimSpace(shared.AsString(payload["chat_session_id"])); nextSessionID != "" {
+		sessionID = nextSessionID
+	}
+	if err != nil && h.SessionCache != nil && sessionResolution.Key != "" && sessioncache.InvalidatesCompletionError(err) {
+		h.SessionCache.Invalidate(sessionResolution.Key)
+		config.Logger.Info("[session_cache] invalid session; retrying with fresh session", "surface", "responses", "account", strings.TrimSpace(a.AccountID), "session_key", strings.TrimSpace(a.SessionKey), "from_cache", sessionResolution.FromCache)
+		sessionID, err = h.DS.CreateSession(r.Context(), a, 3)
+		if err != nil {
+			handleCreateSessionError(w, historySession, a, err)
+			return
+		}
+		pow, err = h.DS.GetPow(r.Context(), a, 3)
+		if err != nil {
+			handlePowError(w, historySession, a, err)
+			return
+		}
+		payload = stdReq.CompletionPayload(sessionID)
+		resp, err = h.DS.CallCompletion(r.Context(), a, payload, pow, 3)
+		if nextSessionID := strings.TrimSpace(shared.AsString(payload["chat_session_id"])); nextSessionID != "" {
+			sessionID = nextSessionID
+		}
+	}
 	if err != nil {
 		if !a.UseConfigToken && shared.CompletionErrorDetail(err).Status == http.StatusUnauthorized {
 			a.MarkDirectTokenInvalid()
@@ -155,9 +180,25 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		writeCompletionCallError(w, historySession, err, "", "")
 		return
 	}
+	shared.StoreDeepSeekSession(h.SessionCache, a, stdReq, "responses", sessionID, sessionResolution.Key)
 
 	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	refFileTokens := stdReq.RefFileTokens
+	config.Logger.Info("[openai_responses_prompt_cache] prepared",
+		"trace_id", traceID,
+		"model", stdReq.ResponseModel,
+		"stream", stdReq.Stream,
+		"thinking", stdReq.Thinking,
+		"search", stdReq.Search,
+		"account", strings.TrimSpace(a.AccountID),
+		"caller", a.CallerID,
+		"prompt_cache_hint", strings.TrimSpace(stdReq.PromptCacheHint),
+		"prompt_prefix_hash", stdReq.PromptPrefixHash,
+		"prompt_prefix_reused", stdReq.PromptPrefixReused,
+		"prompt_prefix_eligible", stdReq.PromptPrefixEligible,
+		"prompt_prefix_tokens", stdReq.PromptPrefixTokens,
+		"prompt_tail_tokens", stdReq.PromptTailTokens,
+	)
 	if stdReq.Stream {
 		h.handleResponsesStreamWithRetry(w, r, a, resp, payload, pow, owner, responseID, stdReq.ResponseModel, stdReq.FinalPrompt, refFileTokens, stdReq.Thinking, stdReq.Search, stdReq.ToolNames, stdReq.ToolsRaw, stdReq.ToolChoice, traceID, historySession)
 		return

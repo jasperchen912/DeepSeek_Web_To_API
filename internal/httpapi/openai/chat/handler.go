@@ -9,7 +9,9 @@ import (
 	"DeepSeek_Web_To_API/internal/httpapi/openai/files"
 	"DeepSeek_Web_To_API/internal/httpapi/openai/history"
 	"DeepSeek_Web_To_API/internal/httpapi/openai/shared"
+	"DeepSeek_Web_To_API/internal/promptcache"
 	"DeepSeek_Web_To_API/internal/promptcompat"
+	"DeepSeek_Web_To_API/internal/sessioncache"
 	"DeepSeek_Web_To_API/internal/toolcall"
 	"DeepSeek_Web_To_API/internal/toolstream"
 )
@@ -19,10 +21,12 @@ const openAIGeneralMaxSize = shared.GeneralMaxSize
 var writeJSON = shared.WriteJSON
 
 type Handler struct {
-	Store       shared.ConfigReader
-	Auth        shared.AuthResolver
-	DS          shared.DeepSeekCaller
-	ChatHistory *chathistory.Store
+	Store        shared.ConfigReader
+	Auth         shared.AuthResolver
+	DS           shared.DeepSeekCaller
+	ChatHistory  *chathistory.Store
+	SessionCache *sessioncache.Cache
+	PromptCache  *promptcache.Cache
 }
 
 func (h *Handler) compatStripReferenceMarkers() bool {

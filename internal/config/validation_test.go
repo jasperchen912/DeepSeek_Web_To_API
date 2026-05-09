@@ -44,6 +44,16 @@ func TestValidateConfigRejectsInvalidValues(t *testing.T) {
 			cfg:  Config{CurrentInputFile: CurrentInputFileConfig{MinChars: -1}},
 			want: "current_input_file.min_chars",
 		},
+		{
+			name: "session cache ttl",
+			cfg:  Config{Cache: CacheConfig{Session: SessionCacheConfig{TTLSeconds: -1}}},
+			want: "cache.session.ttl_seconds",
+		},
+		{
+			name: "session cache max entries",
+			cfg:  Config{Cache: CacheConfig{Session: SessionCacheConfig{MaxEntries: -1}}},
+			want: "cache.session.max_entries",
+		},
 	}
 
 	for _, tc := range tests {

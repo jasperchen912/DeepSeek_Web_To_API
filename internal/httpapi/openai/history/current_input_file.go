@@ -77,7 +77,12 @@ func (s Service) applyCurrentInputFullFile(ctx context.Context, a *auth.RequestA
 	stdReq.FinalPrompt, stdReq.ToolNames = promptcompat.BuildOpenAIPrompt(messages, stdReq.ToolsRaw, "", stdReq.ToolChoice, stdReq.Thinking)
 	// Token accounting must reflect the actual downstream context:
 	// the uploaded DEEPSEEK_WEB_TO_API_HISTORY.txt file content + the continuation live prompt.
-	stdReq.RefFileTokens += util.CountPromptTokens(fileText, stdReq.ResponseModel)
+	prefixTokens := util.CountPromptTokens(fileText, stdReq.ResponseModel)
+	stdReq.PromptPrefixHash = stdReq.CurrentInputPrefixHash
+	stdReq.PromptPrefixTokens = prefixTokens
+	stdReq.PromptTailTokens = util.CountPromptTokens(stdReq.FinalPrompt, stdReq.ResponseModel)
+	stdReq.PromptPrefixEligible = true
+	stdReq.RefFileTokens += prefixTokens
 	stdReq.PromptTokenText = fileText + "\n" + stdReq.FinalPrompt
 	return stdReq, nil
 }

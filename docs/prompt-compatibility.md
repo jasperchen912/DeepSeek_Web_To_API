@@ -121,6 +121,10 @@ OpenAI Chat 使用 `messages`；Responses 可能使用 `input` 字符串、数�
 
 Chat Completions 的最终响应和流式结束块会返回标准 OpenAI token 字段，并额外带上部分网关依赖的兼容字段：`prompt_tokens_details`、`completion_tokens_details`、`input`、`output`、`cacheRead`、`cacheWrite`、`totalTokens` 和零值 `cost`。`/v1/models` 中的 DeepSeek 模型也会暴露 `input`、`output` 与零值 `cost` 元数据，避免客户端在按模型计费或读取 token 结构时遇到缺失字段。
 
+OpenAI Chat 与 Responses 会在上游请求之间复用 DeepSeek `chat_session_id`，但这只是远端 session 容器复用：兼容层仍会为每个请求完整归一化 messages/input、重建历史文本、工具提示、文件引用和最终 prompt。普通请求的 completion payload 继续使用 `parent_message_id: nil`，只有空输出 synthetic retry 会沿用现有逻辑把上一条 `response_message_id` 写入 retry payload。
+
+OpenAI Chat 与 Responses 还会记录 prompt prefix cache 诊断：兼容层根据规范化后的 tools/system/developer/历史消息和最后一条消息之前的内容计算 prefix hash 与估算 token，并在本地 tracker 中判断该 prefix 是否复现。请求体 `prompt_cache_key` 或请求头 `X-DeepSeek-Web-To-API-Prompt-Cache-Key` 只作为诊断 hint 参与 tracker 分组，不会转发 DeepSeek，也不会改变最终 prompt 或完整响应缓存 key。该机制不复用旧答案，也不会把本地估算写入 `prompt_tokens_details.cached_tokens`。
+
 流式 Chat Completions 与 Responses 在请求声明 OpenAI `tools` 时会启用 tool sieve；如果没有显式 `tools`，但最终 prompt 中已经存在 DSML/XML tool-call wrapper（例如第三方客户端自行注入的 `<DSML|tool_calls>` 工具协议），流式层同样会缓冲并解析这些工具块。缓冲解析会兼容全角竖线、`▁` 分隔符、中文 wrapper 别名、有界模糊 DSML wrapper、全角 `＞` 终止符和参数内嵌 DSML/CDATA 内容等常见 DSML 变体，避免拆分 chunk 时把 DSML 标签作为普通 assistant 文本发给下游 channel。
 
 Tool-call 输出按 `Detect -> Normalize -> Repair -> Parse` 处理：先确认存在高置信 wrapper，再把 DSML/XML 别名归一化为内部 `ParsedToolCall`，只对 CDATA 漏闭合、结构化参数内部明确 closing tag 前漏掉 CDATA 结尾、参数 JSON scalar 包裹或缺少 opening wrapper 这类窄场景修复，最后渲染为 OpenAI `tool_calls` / Responses `function_call`。有界模糊匹配只在单个标签头内允许 DSML 与 `tool_calls` 之间出现已知分隔噪声，不扫描属性值或跨标签内容。解析结果会带上 `variant`、`repaired` 和 `reject_reason` 诊断信息；裸 `<invoke>` 或低置信未知结构不会被自动转成工具调用。

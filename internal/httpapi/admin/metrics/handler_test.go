@@ -10,6 +10,8 @@ import (
 
 	"DeepSeek_Web_To_API/internal/chathistory"
 	"DeepSeek_Web_To_API/internal/currentinputmetrics"
+	"DeepSeek_Web_To_API/internal/promptcache"
+	"DeepSeek_Web_To_API/internal/sessioncache"
 )
 
 type cacheStatsStub struct {
@@ -17,6 +19,22 @@ type cacheStatsStub struct {
 }
 
 func (s cacheStatsStub) Stats() map[string]any {
+	return s.stats
+}
+
+type sessionCacheStatsStub struct {
+	stats sessioncache.Stats
+}
+
+func (s sessionCacheStatsStub) Stats() sessioncache.Stats {
+	return s.stats
+}
+
+type promptCacheStatsStub struct {
+	stats promptcache.Stats
+}
+
+func (s promptCacheStatsStub) Stats() promptcache.Stats {
 	return s.stats
 }
 
@@ -68,6 +86,26 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 			"disk_ttl_seconds":           14400,
 			"compression":                "gzip",
 		}},
+		SessionCache: sessionCacheStatsStub{stats: sessioncache.Stats{
+			Hits:               4,
+			Misses:             2,
+			Stores:             3,
+			InflightWaits:      1,
+			Invalidations:      1,
+			Entries:            2,
+			DisabledAutoDelete: 1,
+		}},
+		PromptCache: promptCacheStatsStub{stats: promptcache.Stats{
+			Observed:             5,
+			Eligible:             4,
+			Reused:               2,
+			ReuseRate:            50,
+			EstimatedReadTokens:  300,
+			EstimatedWriteTokens: 500,
+			Entries:              3,
+			LastPrefixHash:       "hash-a",
+			LastHintPresent:      true,
+		}},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/admin/metrics/overview", nil)
 	rec := httptest.NewRecorder()
@@ -92,6 +130,8 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 			PricingSource string  `json:"pricing_source"`
 		} `json:"cost"`
 		Cache              overviewCacheStats           `json:"cache"`
+		SessionCache       sessioncache.Stats           `json:"session_cache"`
+		PromptCache        promptcache.Stats            `json:"prompt_cache"`
 		CurrentInputPrefix currentinputmetrics.Snapshot `json:"current_input_prefix"`
 		History            overviewHistoryStats         `json:"history"`
 		Host               hostSnapshot                 `json:"host"`
@@ -113,6 +153,12 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 	}
 	if body.Cache.HitRate != 60 || body.Cache.MissRate != 40 || body.Cache.CacheableHitRate != 75 || body.Cache.CacheableMissRate != 25 || body.Cache.CacheableMisses != 1 || body.Cache.UncacheableMisses != 1 || body.Cache.MemoryHits != 2 || body.Cache.DiskHits != 1 {
 		t.Fatalf("unexpected cache metrics: %#v", body.Cache)
+	}
+	if body.SessionCache.Hits != 4 || body.SessionCache.InflightWaits != 1 || body.SessionCache.DisabledAutoDelete != 1 {
+		t.Fatalf("unexpected session cache metrics: %#v", body.SessionCache)
+	}
+	if body.PromptCache.Observed != 5 || body.PromptCache.Eligible != 4 || body.PromptCache.Reused != 2 || body.PromptCache.ReuseRate != 50 || body.PromptCache.EstimatedReadTokens != 300 || !body.PromptCache.LastHintPresent {
+		t.Fatalf("unexpected prompt cache metrics: %#v", body.PromptCache)
 	}
 	if body.CurrentInputPrefix.Applied != 2 || body.CurrentInputPrefix.Reused != 1 || body.CurrentInputPrefix.Refreshes != 1 || body.CurrentInputPrefix.ReuseRate != 50 || body.CurrentInputPrefix.CurrentInputFileMsReusedAvg != 120 || body.CurrentInputPrefix.CurrentInputFileMsRefreshAvg != 2000 {
 		t.Fatalf("unexpected current input prefix metrics: %#v", body.CurrentInputPrefix)

@@ -177,6 +177,7 @@ type StorageConfig struct {
 
 type CacheConfig struct {
 	Response ResponseCacheConfig `json:"response,omitempty"`
+	Session  SessionCacheConfig  `json:"session,omitempty"`
 }
 
 type ResponseCacheConfig struct {
@@ -186,6 +187,12 @@ type ResponseCacheConfig struct {
 	MaxBodyBytes     int64  `json:"max_body_bytes,omitempty"`
 	MemoryMaxBytes   int64  `json:"memory_max_bytes,omitempty"`
 	DiskMaxBytes     int64  `json:"disk_max_bytes,omitempty"`
+}
+
+type SessionCacheConfig struct {
+	Enabled    *bool `json:"enabled,omitempty"`
+	TTLSeconds int   `json:"ttl_seconds,omitempty"`
+	MaxEntries int   `json:"max_entries,omitempty"`
 }
 
 type RuntimeConfig struct {

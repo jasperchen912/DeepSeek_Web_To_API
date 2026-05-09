@@ -410,6 +410,11 @@ func TestStoreUsesUnifiedRuntimeConfigFields(t *testing.T) {
 				"max_body_bytes":1048576,
 				"memory_max_bytes":3800000000,
 				"disk_max_bytes":16000000000
+			},
+			"session":{
+				"enabled":true,
+				"ttl_seconds":3600,
+				"max_entries":12345
 			}
 		}
 	}`
@@ -458,6 +463,15 @@ func TestStoreUsesUnifiedRuntimeConfigFields(t *testing.T) {
 	}
 	if got := store.ResponseCacheDiskMaxBytes(); got != 16000000000 {
 		t.Fatalf("unexpected disk cache cap: %d", got)
+	}
+	if !store.SessionCacheEnabled() {
+		t.Fatalf("expected session cache enabled")
+	}
+	if got := store.SessionCacheTTL(); got != time.Hour {
+		t.Fatalf("unexpected session cache ttl: %s", got)
+	}
+	if got := store.SessionCacheMaxEntries(); got != 12345 {
+		t.Fatalf("unexpected session cache max entries: %d", got)
 	}
 }
 

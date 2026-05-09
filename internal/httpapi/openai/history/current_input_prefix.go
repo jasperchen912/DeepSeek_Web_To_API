@@ -83,7 +83,12 @@ func (s Service) applyCurrentInputStablePrefix(ctx context.Context, a *auth.Requ
 	stdReq.CurrentInputCheckpointRefresh = plan.CheckpointRefresh
 	stdReq.RefFileIDs = prependUniqueRefFileID(stdReq.RefFileIDs, plan.FileID)
 	stdReq.FinalPrompt, stdReq.ToolNames = promptcompat.BuildOpenAIPrompt(messages, stdReq.ToolsRaw, "", stdReq.ToolChoice, stdReq.Thinking)
-	stdReq.RefFileTokens += util.CountPromptTokens(plan.PrefixText, stdReq.ResponseModel)
+	prefixTokens := util.CountPromptTokens(plan.PrefixText, stdReq.ResponseModel)
+	stdReq.PromptPrefixHash = plan.PrefixHash
+	stdReq.PromptPrefixTokens = prefixTokens
+	stdReq.PromptTailTokens = util.CountPromptTokens(plan.TailText, stdReq.ResponseModel)
+	stdReq.PromptPrefixEligible = true
+	stdReq.RefFileTokens += prefixTokens
 	stdReq.PromptTokenText = plan.PrefixText + "\n" + stdReq.FinalPrompt
 	return stdReq, true, nil
 }

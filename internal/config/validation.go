@@ -115,7 +115,14 @@ func ValidateCacheConfig(cache CacheConfig) error {
 	if err := ValidateInt64Range("cache.response.memory_max_bytes", response.MemoryMaxBytes, 1, 1<<40, false); err != nil {
 		return err
 	}
-	return ValidateInt64Range("cache.response.disk_max_bytes", response.DiskMaxBytes, 1, 1<<42, false)
+	if err := ValidateInt64Range("cache.response.disk_max_bytes", response.DiskMaxBytes, 1, 1<<42, false); err != nil {
+		return err
+	}
+	session := cache.Session
+	if err := ValidateIntRange("cache.session.ttl_seconds", session.TTLSeconds, 1, 86400, false); err != nil {
+		return err
+	}
+	return ValidateIntRange("cache.session.max_entries", session.MaxEntries, 1, 1000000, false)
 }
 
 func ValidateRuntimeConfig(runtime RuntimeConfig) error {

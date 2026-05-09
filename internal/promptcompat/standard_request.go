@@ -17,6 +17,12 @@ type StandardRequest struct {
 	CurrentInputTailChars         int
 	CurrentInputTailEntries       int
 	CurrentInputCheckpointRefresh bool
+	PromptCacheHint               string
+	PromptPrefixHash              string
+	PromptPrefixTokens            int
+	PromptTailTokens              int
+	PromptPrefixReused            bool
+	PromptPrefixEligible          bool
 	ToolsRaw                      any
 	FinalPrompt                   string
 	ToolNames                     []string

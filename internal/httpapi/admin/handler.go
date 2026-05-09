@@ -24,6 +24,8 @@ type Handler struct {
 	OpenAI        adminshared.OpenAIChatCaller
 	ChatHistory   *chathistory.Store
 	ResponseCache adminshared.ResponseCacheStatsProvider
+	SessionCache  adminshared.SessionCacheStatsProvider
+	PromptCache   adminshared.PromptCacheStatsProvider
 }
 
 func RegisterRoutes(r chi.Router, h *Handler) {
@@ -37,7 +39,7 @@ func RegisterRoutes(r chi.Router, h *Handler) {
 	historyHandler := &adminhistory.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
 	devCaptureHandler := &admindevcapture.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
 	versionHandler := &adminversion.Handler{Store: deps.Store, Pool: deps.Pool, DS: deps.DS, OpenAI: deps.OpenAI, ChatHistory: deps.ChatHistory}
-	metricsHandler := &adminmetrics.Handler{Store: deps.Store, Pool: deps.Pool, ChatHistory: deps.ChatHistory, ResponseCache: deps.ResponseCache}
+	metricsHandler := &adminmetrics.Handler{Store: deps.Store, Pool: deps.Pool, ChatHistory: deps.ChatHistory, ResponseCache: deps.ResponseCache, SessionCache: deps.SessionCache, PromptCache: deps.PromptCache}
 
 	adminauth.RegisterPublicRoutes(r, authHandler)
 	r.Group(func(pr chi.Router) {
@@ -58,7 +60,7 @@ func adminsharedDeps(h *Handler) adminsharedDepsValue {
 	if h == nil {
 		return adminsharedDepsValue{}
 	}
-	return adminsharedDepsValue{Store: h.Store, Pool: h.Pool, DS: h.DS, OpenAI: h.OpenAI, ChatHistory: h.ChatHistory, ResponseCache: h.ResponseCache}
+	return adminsharedDepsValue{Store: h.Store, Pool: h.Pool, DS: h.DS, OpenAI: h.OpenAI, ChatHistory: h.ChatHistory, ResponseCache: h.ResponseCache, SessionCache: h.SessionCache, PromptCache: h.PromptCache}
 }
 
 type adminsharedDepsValue struct {
@@ -68,4 +70,6 @@ type adminsharedDepsValue struct {
 	OpenAI        adminshared.OpenAIChatCaller
 	ChatHistory   *chathistory.Store
 	ResponseCache adminshared.ResponseCacheStatsProvider
+	SessionCache  adminshared.SessionCacheStatsProvider
+	PromptCache   adminshared.PromptCacheStatsProvider
 }

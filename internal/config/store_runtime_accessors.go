@@ -198,6 +198,34 @@ func (s *Store) ResponseCacheDiskMaxBytes() int64 {
 	return s.cfg.Cache.Response.DiskMaxBytes
 }
 
+func (s *Store) SessionCacheEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.Cache.Session.Enabled == nil {
+		return true
+	}
+	return *s.cfg.Cache.Session.Enabled
+}
+
+func (s *Store) SessionCacheTTL() time.Duration {
+	s.mu.RLock()
+	seconds := s.cfg.Cache.Session.TTLSeconds
+	s.mu.RUnlock()
+	if seconds <= 0 {
+		seconds = 7200
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (s *Store) SessionCacheMaxEntries() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cfg.Cache.Session.MaxEntries > 0 {
+		return s.cfg.Cache.Session.MaxEntries
+	}
+	return 50000
+}
+
 func resolvePathValue(raw, defaultRel string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

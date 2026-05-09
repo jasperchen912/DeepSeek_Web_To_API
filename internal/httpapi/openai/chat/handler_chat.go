@@ -18,6 +18,7 @@ import (
 	"DeepSeek_Web_To_API/internal/httpapi/openai/shared"
 	"DeepSeek_Web_To_API/internal/httpapi/requestbody"
 	"DeepSeek_Web_To_API/internal/promptcompat"
+	"DeepSeek_Web_To_API/internal/sessioncache"
 	"DeepSeek_Web_To_API/internal/sse"
 	streamengine "DeepSeek_Web_To_API/internal/stream"
 )
@@ -128,11 +129,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if historySession != nil {
 		historySession.updateHistoryText(stdReq.HistoryText)
 	}
+	stdReq = shared.ObservePromptCache(h.PromptCache, r, a, stdReq, "chat.completions")
 
-	stageStartedAt = time.Now()
-	sessionID, err = h.DS.CreateSession(r.Context(), a, 3)
-	createSessionDuration := time.Since(stageStartedAt)
-	if err != nil {
+	handleCreateSessionErr := func(err error) {
 		sessionDetail := shared.SessionErrorDetail(err)
 		if sessionDetail.Stopped || sessionDetail.Status == http.StatusGatewayTimeout {
 			writeSessionCallError(w, historySession, err)
@@ -143,13 +142,21 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				historySession.error(http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.", "error", "", "")
 			}
 			writeOpenAIError(w, http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.")
-		} else {
-			a.MarkDirectTokenInvalid()
-			if historySession != nil {
-				historySession.error(http.StatusUnauthorized, "Invalid token. If this should be a DeepSeek_Web_To_API key, add it to config.keys first.", "error", "", "")
-			}
-			writeOpenAIError(w, http.StatusUnauthorized, "Invalid token. If this should be a DeepSeek_Web_To_API key, add it to config.keys first.")
+			return
 		}
+		a.MarkDirectTokenInvalid()
+		if historySession != nil {
+			historySession.error(http.StatusUnauthorized, "Invalid token. If this should be a DeepSeek_Web_To_API key, add it to config.keys first.", "error", "", "")
+		}
+		writeOpenAIError(w, http.StatusUnauthorized, "Invalid token. If this should be a DeepSeek_Web_To_API key, add it to config.keys first.")
+	}
+
+	stageStartedAt = time.Now()
+	sessionResolution, err := shared.ResolveDeepSeekSession(r.Context(), h.Store, h.SessionCache, h.DS, a, stdReq, "chat.completions")
+	sessionID = sessionResolution.ID
+	createSessionDuration := time.Since(stageStartedAt)
+	if err != nil {
+		handleCreateSessionErr(err)
 		return
 	}
 	stageStartedAt = time.Now()
@@ -177,6 +184,38 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if nextSessionID := strings.TrimSpace(asString(payload["chat_session_id"])); nextSessionID != "" {
 		sessionID = nextSessionID
 	}
+	if err != nil && h.SessionCache != nil && sessionResolution.Key != "" && sessioncache.InvalidatesCompletionError(err) {
+		h.SessionCache.Invalidate(sessionResolution.Key)
+		config.Logger.Info("[session_cache] invalid session; retrying with fresh session", "surface", "chat.completions", "account", authAccountID(a), "session_key", shortTimingValue(a.SessionKey), "from_cache", sessionResolution.FromCache)
+		sessionID, err = h.DS.CreateSession(r.Context(), a, 3)
+		if err != nil {
+			handleCreateSessionErr(err)
+			return
+		}
+		pow, err = h.DS.GetPow(r.Context(), a, 3)
+		if err != nil {
+			powDetail := shared.PowErrorDetail(err)
+			if powDetail.Stopped || powDetail.Status == http.StatusGatewayTimeout {
+				writePowCallError(w, historySession, err)
+				return
+			}
+			if !a.UseConfigToken {
+				a.MarkDirectTokenInvalid()
+			}
+			if historySession != nil {
+				historySession.error(http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).", "error", "", "")
+			}
+			writeOpenAIError(w, http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).")
+			return
+		}
+		payload = stdReq.CompletionPayload(sessionID)
+		stageStartedAt = time.Now()
+		resp, err = h.DS.CallCompletion(r.Context(), a, payload, pow, 3)
+		callCompletionOpenDuration += time.Since(stageStartedAt)
+		if nextSessionID := strings.TrimSpace(asString(payload["chat_session_id"])); nextSessionID != "" {
+			sessionID = nextSessionID
+		}
+	}
 	if err != nil {
 		if !a.UseConfigToken && shared.CompletionErrorDetail(err).Status == http.StatusUnauthorized {
 			a.MarkDirectTokenInvalid()
@@ -184,6 +223,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeCompletionCallError(w, historySession, err, "", "")
 		return
 	}
+	shared.StoreDeepSeekSession(h.SessionCache, a, stdReq, "chat.completions", sessionID, sessionResolution.Key)
 	refFileTokens := stdReq.RefFileTokens
 	config.Logger.Info("[openai_chat_timing] prepared",
 		"trace_id", traceID,
@@ -212,6 +252,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"final_prompt_hash", shortHashString(stdReq.FinalPrompt),
 		"prompt_token_text_chars", len(stdReq.PromptTokenText),
 		"prompt_token_text_hash", shortHashString(stdReq.PromptTokenText),
+		"prompt_cache_hint", shortTimingValue(stdReq.PromptCacheHint),
+		"prompt_prefix_hash", stdReq.PromptPrefixHash,
+		"prompt_prefix_reused", stdReq.PromptPrefixReused,
+		"prompt_prefix_eligible", stdReq.PromptPrefixEligible,
+		"prompt_prefix_tokens", stdReq.PromptPrefixTokens,
+		"prompt_tail_tokens", stdReq.PromptTailTokens,
 		"ref_file_tokens", refFileTokens,
 		"read_body_ms", durationMillis(readBodyDuration),
 		"determine_caller_ms", durationMillis(determineCallerDuration),
@@ -221,6 +267,8 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"request_normalize_ms", durationMillis(requestNormalizeDuration),
 		"current_input_file_ms", durationMillis(currentInputFileDuration),
 		"create_session_ms", durationMillis(createSessionDuration),
+		"session_cache_hit", sessionResolution.FromCache,
+		"session_cache_waited", sessionResolution.Waited,
 		"get_pow_ms", durationMillis(getPowDuration),
 		"call_completion_open_ms", durationMillis(callCompletionOpenDuration),
 		"prepare_total_ms", durationMillis(time.Since(requestStartedAt)),

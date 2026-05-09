@@ -55,8 +55,16 @@ Admin routes include login, config import/export, API keys, account pool, proxie
 
 Cacheable protocol responses may include:
 
-- `X-DeepSeek-Web-To-API-Cache: memory|disk`
+- `X-DeepSeek-Web-To-API-Cache: memory|disk|singleflight`
 - `X-DeepSeek-Web-To-API-Cache-Expires-At: <RFC3339>`
+
+The response cache covers OpenAI Chat/Responses/Embeddings, Claude Messages/CountTokens, and Gemini GenerateContent/StreamGenerateContent routes. Cache keys are isolated by caller, canonical protocol path, query string, normalized output-affecting request headers, and normalized JSON request body. Concurrent misses for the same key are coalesced into one upstream request; waiters replay the complete result and are marked as `singleflight`.
+
+Streaming requests and streaming responses are not written to the response cache. Other non-cacheable cases include non-2xx responses, oversized request or response bodies, explicit bypass, missing caller ownership, `Set-Cookie`, and `Cache-Control: no-store`.
+
+OpenAI Chat Completions and Responses also reuse DeepSeek `chat_session_id` values on upstream cache misses. The session cache is isolated by caller, stable SessionKey, account or direct-token hash, model/model_type, thinking/search, and API surface. It is enabled by default and can be disabled with `cache.session.enabled=false`; it does not change prompt assembly or turn normal requests into `parent_message_id` chained follow-ups. If a newly created or cached remote session immediately returns not found/expired, the key is invalidated and retried once with a fresh session.
+
+OpenAI Chat/Responses also record prompt-prefix cache diagnostics: stable prefix hash, estimated prefix/tail tokens, and whether the prefix was seen before in the local tracker. Request body `prompt_cache_key` or header `X-DeepSeek-Web-To-API-Prompt-Cache-Key` can be used as a diagnostic hint. The hint is not forwarded to DeepSeek, is not part of the full response-cache key, and does not enable old-answer reuse. `usage.prompt_tokens_details.cached_tokens` keeps its upstream-real meaning and is not filled from local estimates.
 
 Bypass with:
 

@@ -49,23 +49,26 @@ type Options struct {
 }
 
 type Cache struct {
-	mu             sync.Mutex
-	dir            string
-	memoryTTL      time.Duration
-	diskTTL        time.Duration
-	maxBody        int64
-	memoryMaxBytes int64
-	diskMaxBytes   int64
-	memoryBytes    int64
-	hits           int64
-	misses         int64
-	stores         int64
-	memoryHits     int64
-	diskHits       int64
-	uncacheable    map[string]int64
-	items          map[string]memoryEntry
-	lastDiskSweep  time.Time
-	onHit          HitFunc
+	mu               sync.Mutex
+	dir              string
+	memoryTTL        time.Duration
+	diskTTL          time.Duration
+	maxBody          int64
+	memoryMaxBytes   int64
+	diskMaxBytes     int64
+	memoryBytes      int64
+	hits             int64
+	misses           int64
+	stores           int64
+	memoryHits       int64
+	diskHits         int64
+	singleflightHits int64
+	inflightWaits    int64
+	uncacheable      map[string]int64
+	items            map[string]memoryEntry
+	inflight         map[string]*cacheFlight
+	lastDiskSweep    time.Time
+	onHit            HitFunc
 }
 
 type Entry struct {
@@ -78,7 +81,20 @@ type Entry struct {
 type memoryEntry struct {
 	entry           Entry
 	memoryExpiresAt time.Time
+	accessedAt      time.Time
 	size            int64
+}
+
+type cacheFlight struct {
+	done   chan struct{}
+	result cacheFlightResult
+}
+
+type cacheFlightResult struct {
+	entry     Entry
+	cacheable bool
+	stored    bool
+	reason    string
 }
 
 type diskRecord struct {
@@ -125,6 +141,7 @@ func New(opts Options) *Cache {
 		diskMaxBytes:   diskMaxBytes,
 		uncacheable:    map[string]int64{},
 		items:          map[string]memoryEntry{},
+		inflight:       map[string]*cacheFlight{},
 		onHit:          opts.OnHit,
 	}
 }
@@ -145,16 +162,22 @@ func (c *Cache) Wrap(resolver CallerResolver, next http.Handler) http.Handler {
 			return
 		}
 		if c.requestBodyTooLarge(r) {
+			c.recordMiss()
+			c.recordUncacheable("oversized_request")
 			next.ServeHTTP(w, r)
 			return
 		}
 		rawBody, tooLarge, err := c.readRequestBody(r)
 		if err != nil {
+			c.recordMiss()
+			c.recordUncacheable("request_body_read_error")
 			r.Body = replayBody(rawBody, r.Body)
 			next.ServeHTTP(w, r)
 			return
 		}
 		if tooLarge {
+			c.recordMiss()
+			c.recordUncacheable("oversized_request")
 			r.Body = replayBody(rawBody, r.Body)
 			next.ServeHTTP(w, r)
 			return
@@ -171,12 +194,15 @@ func (c *Cache) Wrap(resolver CallerResolver, next http.Handler) http.Handler {
 			}
 		}
 		if owner == "" {
+			c.recordMiss()
+			c.recordUncacheable("missing_owner")
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		path := canonicalRequestPath(r.URL.Path)
-		if requestBodyStreamEnabled(rawBody) {
+		if requestIsStreaming(path, rawBody) {
+			c.recordMiss()
 			c.recordUncacheable("stream_request")
 			config.Logger.Info("[response_cache] uncacheable", "path", path, "owner", owner, "reason", "stream_request", "request_body_bytes", len(rawBody))
 			r.Body = io.NopCloser(bytes.NewReader(rawBody))
@@ -185,7 +211,7 @@ func (c *Cache) Wrap(resolver CallerResolver, next http.Handler) http.Handler {
 		}
 
 		key := RequestKey(r, owner, rawBody)
-		if entry, source, ok := c.Get(key); ok {
+		if entry, source, ok := c.lookup(key); ok {
 			config.Logger.Info("[response_cache] hit", "path", path, "source", source, "key", key, "owner", owner, "status", entry.Status, "request_body_bytes", len(rawBody), "response_body_bytes", len(entry.Body))
 			if c.onHit != nil {
 				c.onHit(r, cloneEntry(entry), source)
@@ -193,19 +219,72 @@ func (c *Cache) Wrap(resolver CallerResolver, next http.Handler) http.Handler {
 			writeCachedResponse(w, entry, source)
 			return
 		}
+		flight, leader := c.beginFlight(key)
+		if !leader {
+			<-flight.done
+			result := flight.result
+			if result.cacheable && result.stored && !result.entry.empty() {
+				c.recordHit("singleflight")
+				config.Logger.Info("[response_cache] hit", "path", path, "source", "singleflight", "key", key, "owner", owner, "status", result.entry.Status, "request_body_bytes", len(rawBody), "response_body_bytes", len(result.entry.Body))
+				if c.onHit != nil {
+					c.onHit(r, cloneEntry(result.entry), "singleflight")
+				}
+				writeCachedResponse(w, result.entry, "singleflight")
+				return
+			}
+			c.recordMiss()
+			if result.reason != "" {
+				c.recordUncacheable(result.reason)
+			}
+			if !result.entry.empty() {
+				writeCapturedResponse(w, result.entry)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(rawBody))
+			next.ServeHTTP(w, r)
+			return
+		}
+		c.recordMiss()
 		config.Logger.Info("[response_cache] miss", "path", path, "key", key, "owner", owner, "request_body_bytes", len(rawBody))
 
 		r.Body = io.NopCloser(bytes.NewReader(rawBody))
 		cw := newCaptureResponseWriter(w, c.maxBody)
+		finishedFlight := false
+		defer func() {
+			if !finishedFlight {
+				c.finishFlight(key, cacheFlightResult{reason: "upstream_interrupted"})
+			}
+		}()
 		next.ServeHTTP(cw, r)
 		if entry, ok, reason := cw.cacheEntry(); ok {
-			c.Set(key, entry)
-			config.Logger.Info("[response_cache] store", "path", path, "key", key, "owner", owner, "status", entry.Status, "response_body_bytes", len(entry.Body))
+			stored := c.Set(key, entry)
+			if stored {
+				config.Logger.Info("[response_cache] store", "path", path, "key", key, "owner", owner, "status", entry.Status, "response_body_bytes", len(entry.Body))
+			} else {
+				reason = "store_failed"
+				c.recordUncacheable(reason)
+				config.Logger.Warn("[response_cache] store skipped", "path", path, "key", key, "owner", owner, "reason", reason)
+			}
+			c.finishFlight(key, cacheFlightResult{entry: entry, cacheable: true, stored: stored, reason: reason})
+			finishedFlight = true
 		} else {
 			c.recordUncacheable(reason)
 			config.Logger.Info("[response_cache] uncacheable", "path", path, "key", key, "owner", owner, "reason", reason)
+			entry := cw.entry()
+			if reason == "oversized_response" && cw.truncated {
+				entry = Entry{}
+			}
+			c.finishFlight(key, cacheFlightResult{entry: entry, reason: reason})
+			finishedFlight = true
 		}
 	})
+}
+
+func requestIsStreaming(path string, body []byte) bool {
+	if strings.HasSuffix(canonicalRequestPath(path), ":streamGenerateContent") {
+		return true
+	}
+	return requestBodyStreamEnabled(body)
 }
 
 func requestBodyStreamEnabled(body []byte) bool {
@@ -309,6 +388,14 @@ func isJSONContentType(raw string) bool {
 	return raw == "application/json" || strings.Contains(raw, "+json") || strings.Contains(raw, "/json")
 }
 
+func isEventStreamContentType(raw string) bool {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.IndexByte(raw, ';'); i >= 0 {
+		raw = strings.TrimSpace(raw[:i])
+	}
+	return raw == "text/event-stream"
+}
+
 func normalizeCacheKeyJSONValue(value any, topLevel bool) (any, bool) {
 	switch v := value.(type) {
 	case map[string]any:
@@ -356,7 +443,7 @@ func ignoredCacheKeyField(key string, topLevel bool) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "metadata", "user", "service_tier", "parallel_tool_calls", "seed", "store", "betas":
+	case "metadata", "user", "service_tier", "parallel_tool_calls", "seed", "store", "betas", "prompt_cache_key":
 		return true
 	default:
 		return false
@@ -364,6 +451,14 @@ func ignoredCacheKeyField(key string, topLevel bool) bool {
 }
 
 func (c *Cache) Get(key string) (Entry, string, bool) {
+	entry, source, ok := c.lookup(key)
+	if !ok {
+		c.recordMiss()
+	}
+	return entry, source, ok
+}
+
+func (c *Cache) lookup(key string) (Entry, string, bool) {
 	key = normalizeKey(key)
 	if key == "" {
 		return Entry{}, "", false
@@ -373,6 +468,9 @@ func (c *Cache) Get(key string) (Entry, string, bool) {
 	c.sweepMemoryLocked(now)
 	if item, ok := c.items[key]; ok {
 		if now.Before(item.memoryExpiresAt) && now.Before(item.entry.DiskExpiresAt) {
+			item.accessedAt = now
+			item.memoryExpiresAt = c.memoryExpiresAt(item.entry, now)
+			c.items[key] = item
 			entry := cloneEntry(item.entry)
 			c.recordHitLocked("memory")
 			c.mu.Unlock()
@@ -384,7 +482,6 @@ func (c *Cache) Get(key string) (Entry, string, bool) {
 
 	entry, ok := c.getDisk(key, now)
 	if !ok {
-		c.recordMiss()
 		return Entry{}, "", false
 	}
 	c.putMemory(key, entry, now)
@@ -392,24 +489,76 @@ func (c *Cache) Get(key string) (Entry, string, bool) {
 	return cloneEntry(entry), "disk", true
 }
 
-func (c *Cache) Set(key string, entry Entry) {
+func (c *Cache) Set(key string, entry Entry) bool {
 	key = normalizeKey(key)
 	if key == "" || !entry.cacheable(c.maxBody) {
-		return
+		return false
 	}
 	now := time.Now()
 	if entry.DiskExpiresAt.IsZero() || !entry.DiskExpiresAt.After(now) {
 		entry.DiskExpiresAt = now.Add(c.diskTTL)
 	}
 	entry = cloneEntry(entry)
-	c.putMemory(key, entry, now)
+	memoryStored := c.putMemory(key, entry, now)
+	diskStored := false
 	if err := c.putDisk(key, entry, now); err != nil {
 		config.Logger.Warn("[response_cache] disk write failed", "error", err)
 	} else {
-		c.enforceDiskLimit(now)
+		diskStored = c.dir != ""
+		if diskStored {
+			c.enforceDiskLimit(now)
+			diskStored = c.diskEntryExists(key)
+		}
+	}
+	if !memoryStored && !diskStored {
+		return false
 	}
 	c.recordStore()
 	c.maybeSweepDisk(now)
+	return true
+}
+
+func (c *Cache) diskEntryExists(key string) bool {
+	path, ok := c.diskPath(key)
+	if !ok {
+		return false
+	}
+	info, err := os.Lstat(path)
+	return err == nil && !info.IsDir() && info.Mode()&os.ModeSymlink == 0
+}
+
+func (c *Cache) beginFlight(key string) (*cacheFlight, bool) {
+	key = normalizeKey(key)
+	if key == "" {
+		return nil, true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.inflight == nil {
+		c.inflight = map[string]*cacheFlight{}
+	}
+	if flight, ok := c.inflight[key]; ok {
+		c.inflightWaits++
+		return flight, false
+	}
+	flight := &cacheFlight{done: make(chan struct{})}
+	c.inflight[key] = flight
+	return flight, true
+}
+
+func (c *Cache) finishFlight(key string, result cacheFlightResult) {
+	key = normalizeKey(key)
+	if key == "" {
+		return
+	}
+	c.mu.Lock()
+	flight := c.inflight[key]
+	if flight != nil {
+		flight.result = result
+		delete(c.inflight, key)
+		close(flight.done)
+	}
+	c.mu.Unlock()
 }
 
 func (c *Cache) requestBodyTooLarge(r *http.Request) bool {
@@ -477,26 +626,35 @@ func canonicalRequestPath(path string) string {
 	}
 }
 
-func (c *Cache) putMemory(key string, entry Entry, now time.Time) {
+func (c *Cache) putMemory(key string, entry Entry, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sweepMemoryLocked(now)
 	size := entry.memorySize()
 	if c.memoryMaxBytes > 0 && size > c.memoryMaxBytes {
-		return
+		return false
 	}
-	expiresAt := now.Add(c.memoryTTL)
-	if entry.DiskExpiresAt.Before(expiresAt) {
-		expiresAt = entry.DiskExpiresAt
-	}
+	expiresAt := c.memoryExpiresAt(entry, now)
 	if expiresAt.After(now) {
 		if old, ok := c.items[key]; ok {
 			c.memoryBytes -= old.size
 		}
-		c.items[key] = memoryEntry{entry: cloneEntry(entry), memoryExpiresAt: expiresAt, size: size}
+		c.items[key] = memoryEntry{entry: cloneEntry(entry), memoryExpiresAt: expiresAt, accessedAt: now, size: size}
 		c.memoryBytes += size
 		c.enforceMemoryLimitLocked()
+		if _, ok := c.items[key]; ok {
+			return true
+		}
 	}
+	return false
+}
+
+func (c *Cache) memoryExpiresAt(entry Entry, now time.Time) time.Time {
+	expiresAt := now.Add(c.memoryTTL)
+	if entry.DiskExpiresAt.Before(expiresAt) {
+		expiresAt = entry.DiskExpiresAt
+	}
+	return expiresAt
 }
 
 func (c *Cache) sweepMemoryLocked(now time.Time) {
@@ -520,7 +678,7 @@ func (c *Cache) enforceMemoryLimitLocked() {
 		var oldest memoryEntry
 		first := true
 		for key, item := range c.items {
-			if first || item.memoryExpiresAt.Before(oldest.memoryExpiresAt) {
+			if first || item.accessedAt.Before(oldest.accessedAt) {
 				oldestKey = key
 				oldest = item
 				first = false
@@ -547,6 +705,8 @@ func (c *Cache) recordHitLocked(source string) {
 		c.memoryHits++
 	case "disk":
 		c.diskHits++
+	case "singleflight":
+		c.singleflightHits++
 	}
 }
 
@@ -819,8 +979,32 @@ func writeCachedResponse(w http.ResponseWriter, entry Entry, source string) {
 	}
 }
 
+func writeCapturedResponse(w http.ResponseWriter, entry Entry) {
+	for k, vv := range sanitizeResponseHeader(entry.Header) {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	if entry.Status == 0 {
+		entry.Status = http.StatusOK
+	}
+	w.WriteHeader(entry.Status)
+	if len(entry.Body) > 0 {
+		if _, err := w.Write(entry.Body); err != nil {
+			config.Logger.Warn("[response_cache] singleflight replay write failed", "error", err)
+		}
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 func (e Entry) cacheable(maxBody int64) bool {
 	return e.uncacheableReason(maxBody) == ""
+}
+
+func (e Entry) empty() bool {
+	return e.Status == 0 && len(e.Header) == 0 && len(e.Body) == 0
 }
 
 func (e Entry) uncacheableReason(maxBody int64) string {
@@ -832,6 +1016,9 @@ func (e Entry) uncacheableReason(maxBody int64) string {
 	}
 	if maxBody > 0 && int64(len(e.Body)) > maxBody {
 		return "oversized_response"
+	}
+	if isEventStreamContentType(e.Header.Get("Content-Type")) {
+		return "stream_response"
 	}
 	if hasHeaderToken(e.Header.Get("Cache-Control"), "no-store") {
 		return "response_no_store"
@@ -933,15 +1120,7 @@ func (w *captureResponseWriter) capture(p []byte) {
 }
 
 func (w *captureResponseWriter) cacheEntry() (Entry, bool, string) {
-	status := w.status
-	if status == 0 {
-		status = http.StatusOK
-	}
-	entry := Entry{
-		Status: status,
-		Header: sanitizeResponseHeader(w.Header()),
-		Body:   append([]byte(nil), w.body.Bytes()...),
-	}
+	entry := w.entry()
 	if w.truncated {
 		return Entry{}, false, "oversized_response"
 	}
@@ -949,6 +1128,18 @@ func (w *captureResponseWriter) cacheEntry() (Entry, bool, string) {
 		return Entry{}, false, reason
 	}
 	return entry, true, ""
+}
+
+func (w *captureResponseWriter) entry() Entry {
+	status := w.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	return Entry{
+		Status: status,
+		Header: sanitizeResponseHeader(w.Header()),
+		Body:   append([]byte(nil), w.body.Bytes()...),
+	}
 }
 
 func requestForcesBypass(r *http.Request) bool {
@@ -1006,14 +1197,85 @@ func requestHeaderValue(h http.Header, primary string, legacy ...string) string 
 
 func requestHeaderValues(h http.Header, primary string, legacy ...string) []string {
 	if values := h.Values(primary); len(values) > 0 {
-		return values
+		return canonicalRequestHeaderValues(primary, values)
 	}
 	for _, name := range legacy {
 		if values := h.Values(name); len(values) > 0 {
-			return values
+			return canonicalRequestHeaderValues(primary, values)
 		}
 	}
 	return nil
+}
+
+func canonicalRequestHeaderValues(name string, values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, part := range splitHeaderValueForKey(name, value) {
+			normalized := normalizeHeaderValueForKey(name, part)
+			if normalized != "" {
+				parts = append(parts, normalized)
+			}
+		}
+	}
+	sort.Strings(parts)
+	return parts
+}
+
+func splitHeaderValueForKey(name, value string) []string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "accept", "anthropic-beta":
+		return strings.Split(value, ",")
+	default:
+		return []string{value}
+	}
+}
+
+func normalizeHeaderValueForKey(name, value string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	switch name {
+	case "content-type":
+		value = strings.ToLower(value)
+		if i := strings.IndexByte(value, ';'); i >= 0 {
+			value = strings.TrimSpace(value[:i])
+		}
+		return value
+	case "accept", "anthropic-beta":
+		return normalizeTokenHeaderValue(value)
+	case "anthropic-version":
+		return strings.ToLower(value)
+	default:
+		return value
+	}
+}
+
+func normalizeTokenHeaderValue(value string) string {
+	segments := strings.Split(value, ";")
+	if len(segments) == 0 {
+		return ""
+	}
+	main := strings.ToLower(strings.TrimSpace(segments[0]))
+	if main == "" {
+		return ""
+	}
+	params := make([]string, 0, len(segments)-1)
+	for _, segment := range segments[1:] {
+		segment = strings.ToLower(strings.TrimSpace(segment))
+		if segment != "" {
+			params = append(params, segment)
+		}
+	}
+	sort.Strings(params)
+	if len(params) == 0 {
+		return main
+	}
+	return main + ";" + strings.Join(params, ";")
 }
 
 func writeKeyPart(w io.Writer, value string) {
@@ -1118,6 +1380,8 @@ func (c *Cache) Stats() map[string]any {
 		"uncacheable_misses": uncacheableTotal,
 		"memory_hits":        c.memoryHits,
 		"disk_hits":          c.diskHits,
+		"singleflight_hits":  c.singleflightHits,
+		"inflight_waits":     c.inflightWaits,
 		"memory_items":       len(c.items),
 		"memory_bytes":       c.memoryBytes,
 		"memory_max_bytes":   c.memoryMaxBytes,

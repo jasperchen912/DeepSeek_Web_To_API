@@ -10,6 +10,8 @@ type Handler struct {
 	Pool          adminshared.PoolController
 	ChatHistory   *chathistory.Store
 	ResponseCache adminshared.ResponseCacheStatsProvider
+	SessionCache  adminshared.SessionCacheStatsProvider
+	PromptCache   adminshared.PromptCacheStatsProvider
 }
 
 var writeJSON = adminshared.WriteJSON

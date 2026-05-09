@@ -1,13 +1,16 @@
 package responsecache
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -99,6 +102,88 @@ func TestMiddlewareCachesProtocolResponseInMemory(t *testing.T) {
 	}
 }
 
+func TestMiddlewareCoalescesConcurrentMissesForSameKey(t *testing.T) {
+	t.Parallel()
+
+	cache := New(Options{Dir: t.TempDir(), MemoryTTL: time.Minute, DiskTTL: time.Hour})
+	var calls int32
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	handler := cache.Wrap(stubResolver{caller: "caller-a"}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := atomic.AddInt32(&calls, 1)
+		if call == 1 {
+			close(ready)
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+
+	const total = 8
+	var wg sync.WaitGroup
+	statuses := make(chan int, total)
+	cacheHeaders := make(chan string, total)
+	for i := 0; i < total; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+			req.Header.Set("Authorization", "Bearer key-a")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			statuses <- rec.Code
+			cacheHeaders <- rec.Header().Get("X-DeepSeek-Web-To-API-Cache")
+		}()
+	}
+	<-ready
+	time.Sleep(10 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	close(statuses)
+	close(cacheHeaders)
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected one upstream handler call, got %d", got)
+	}
+	for status := range statuses {
+		if status != http.StatusOK {
+			t.Fatalf("unexpected status=%d", status)
+		}
+	}
+	var coalesced int
+	for header := range cacheHeaders {
+		if header == "singleflight" || header == "memory" {
+			coalesced++
+		}
+	}
+	if coalesced == 0 {
+		t.Fatal("expected at least one coalesced or memory cache replay")
+	}
+	stats := cache.Stats()
+	if got := stats["stores"]; got != int64(1) {
+		t.Fatalf("expected one store, got %v", got)
+	}
+	if got := stats["inflight_waits"]; got == int64(0) {
+		t.Fatalf("expected inflight waits, got %v", got)
+	}
+}
+
+func TestRequestKeyNormalizesEquivalentHeaders(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"model":"m","messages":[]}`)
+	reqA := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	reqA.Header.Set("Content-Type", "application/json; charset=utf-8")
+	reqA.Header.Set("Accept", "application/json, text/event-stream")
+	reqB := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	reqB.Header.Set("Content-Type", "application/json")
+	reqB.Header.Set("Accept", " text/event-stream , application/json ")
+
+	if RequestKey(reqA, "caller-a", body) != RequestKey(reqB, "caller-a", body) {
+		t.Fatal("expected equivalent content negotiation headers to share cache key")
+	}
+}
+
 func TestCacheFallsBackToCompressedDiskAfterMemoryExpiry(t *testing.T) {
 	t.Parallel()
 
@@ -187,8 +272,42 @@ func TestStreamRequestSkipsCache(t *testing.T) {
 		t.Fatalf("expected stream requests to call handler twice, got %d", got)
 	}
 	stats := cache.Stats()
+	if got := stats["misses"]; got != int64(2) {
+		t.Fatalf("expected two stream misses, got %v", got)
+	}
 	if got := stats["stores"]; got != int64(0) {
 		t.Fatalf("expected zero stream cache stores, got %v", got)
+	}
+	if got := stats["uncacheable_stream_request"]; got != int64(2) {
+		t.Fatalf("expected two stream_request misses, got %v", got)
+	}
+}
+
+func TestGeminiStreamEndpointSkipsCache(t *testing.T) {
+	t.Parallel()
+
+	cache := New(Options{Dir: t.TempDir(), MemoryTTL: time.Minute, DiskTTL: time.Hour})
+	var calls int32
+	handler := cache.Wrap(stubResolver{caller: "caller-a"}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {}\n\n"))
+	}))
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/models/gemini-2.5-pro:streamGenerateContent", strings.NewReader(`{"contents":[]}`))
+		req.Header.Set("Authorization", "Bearer key-a")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Header().Get("X-DeepSeek-Web-To-API-Cache") != "" {
+			t.Fatalf("unexpected cache hit on Gemini stream request")
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("expected stream endpoint to call handler twice, got %d", got)
+	}
+	if got := cache.Stats()["uncacheable_stream_request"]; got != int64(2) {
+		t.Fatalf("expected two stream_request misses, got %v", got)
 	}
 }
 
@@ -220,6 +339,13 @@ func TestOversizedBodySkipsCacheWithoutConsumingBody(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("expected oversized body to call handler once, got %d", got)
+	}
+	stats := cache.Stats()
+	if got := stats["misses"]; got != int64(1) {
+		t.Fatalf("expected one oversized miss, got %v", got)
+	}
+	if got := stats["uncacheable_oversized_request"]; got != int64(1) {
+		t.Fatalf("expected one oversized_request reason, got %v", got)
 	}
 }
 
@@ -385,6 +511,19 @@ func TestRequestKeyCanonicalizesJSONBodyAndIgnoredMetadata(t *testing.T) {
 	}
 }
 
+func TestRequestKeyIgnoresPromptCacheKeyHint(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Content-Type", "application/json")
+	bodyA := []byte(`{"model":"m","messages":[{"role":"user","content":"hello"}],"prompt_cache_key":"hint-a"}`)
+	bodyB := []byte(`{"model":"m","messages":[{"role":"user","content":"hello"}],"prompt_cache_key":"hint-b"}`)
+
+	if RequestKey(req, "caller-a", bodyA) != RequestKey(req, "caller-a", bodyB) {
+		t.Fatal("expected prompt_cache_key hint to be ignored in response cache key")
+	}
+}
+
 func TestRequestKeyPreservesSemanticJSONNull(t *testing.T) {
 	t.Parallel()
 
@@ -460,6 +599,33 @@ func TestMiddlewareCountsUncacheableMisses(t *testing.T) {
 	}
 }
 
+func TestMiddlewareCountsMissingOwnerAsUncacheable(t *testing.T) {
+	t.Parallel()
+
+	cache := New(Options{Dir: t.TempDir(), MemoryTTL: time.Minute, DiskTTL: time.Hour})
+	var calls int32
+	handler := cache.Wrap(stubResolver{caller: ""}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m"}`))
+	req.Header.Set("Authorization", "Bearer key-a")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected handler call, got %d", got)
+	}
+	stats := cache.Stats()
+	if got := stats["misses"]; got != int64(1) {
+		t.Fatalf("expected one miss, got %v", got)
+	}
+	if got := stats["uncacheable_missing_owner"]; got != int64(1) {
+		t.Fatalf("expected missing_owner reason, got %v", got)
+	}
+}
+
 func TestCacheSkipsUncacheableResponses(t *testing.T) {
 	t.Parallel()
 
@@ -485,6 +651,27 @@ func TestCacheSkipsUncacheableResponses(t *testing.T) {
 	})
 	if _, _, ok := cache.Get(key); ok {
 		t.Fatal("expected no-store response to skip cache")
+	}
+}
+
+func TestSetDoesNotReportStoreWhenMemoryAndDiskWritesFail(t *testing.T) {
+	t.Parallel()
+
+	dirFile := filepath.Join(t.TempDir(), "response-cache")
+	if err := os.WriteFile(dirFile, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write dir sentinel: %v", err)
+	}
+	cache := New(Options{Dir: dirFile, MemoryTTL: time.Minute, DiskTTL: time.Hour, MemoryMaxBytes: 1})
+	key := strings.Repeat("f", 64)
+	if stored := cache.Set(key, Entry{Status: http.StatusOK, Body: []byte(`{"ok":true}`)}); stored {
+		t.Fatal("expected Set to report failed store")
+	}
+	stats := cache.Stats()
+	if got := stats["stores"]; got != int64(0) {
+		t.Fatalf("expected zero stores, got %v", got)
+	}
+	if _, _, ok := cache.Get(key); ok {
+		t.Fatal("expected failed store to be unavailable")
 	}
 }
 
@@ -532,12 +719,41 @@ func TestMemoryLimitEvictsEntries(t *testing.T) {
 	}
 }
 
+func TestMemoryLimitEvictsLeastRecentlyUsedEntry(t *testing.T) {
+	t.Parallel()
+
+	cache := New(Options{Dir: t.TempDir(), MemoryTTL: time.Hour, DiskTTL: time.Hour, MemoryMaxBytes: 8})
+	keyA := strings.Repeat("a", 64)
+	keyB := strings.Repeat("b", 64)
+	keyC := strings.Repeat("c", 64)
+	cache.Set(keyA, Entry{Status: http.StatusOK, Body: []byte(`aaaa`)})
+	time.Sleep(time.Millisecond)
+	cache.Set(keyB, Entry{Status: http.StatusOK, Body: []byte(`bbbb`)})
+	time.Sleep(time.Millisecond)
+	if _, source, ok := cache.Get(keyA); !ok || source != "memory" {
+		t.Fatalf("expected keyA memory hit before eviction, ok=%v source=%q", ok, source)
+	}
+	time.Sleep(time.Millisecond)
+	cache.Set(keyC, Entry{Status: http.StatusOK, Body: []byte(`cccc`)})
+
+	cache.mu.Lock()
+	_, hasA := cache.items[keyA]
+	_, hasB := cache.items[keyB]
+	_, hasC := cache.items[keyC]
+	cache.mu.Unlock()
+	if !hasA || hasB || !hasC {
+		t.Fatalf("expected LRU memory set to keep A/C and evict B; hasA=%v hasB=%v hasC=%v", hasA, hasB, hasC)
+	}
+}
+
 func TestDiskLimitPrunesCompressedFiles(t *testing.T) {
 	t.Parallel()
 
 	cache := New(Options{Dir: t.TempDir(), MemoryTTL: time.Hour, DiskTTL: time.Hour, MemoryMaxBytes: 1, DiskMaxBytes: 1})
 	key := strings.Repeat("e", 64)
-	cache.Set(key, Entry{Status: http.StatusOK, Body: []byte(`{"too":"large for tiny disk limit"}`)})
+	if stored := cache.Set(key, Entry{Status: http.StatusOK, Body: []byte(`{"too":"large for tiny disk limit"}`)}); stored {
+		t.Fatal("expected store to report false after disk limit prunes the entry")
+	}
 
 	if _, _, ok := cache.Get(key); ok {
 		t.Fatal("expected disk limit to prune cache entry")

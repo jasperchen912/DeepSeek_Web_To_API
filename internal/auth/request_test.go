@@ -46,6 +46,50 @@ func TestDetermineWithXAPIKeyUsesDirectToken(t *testing.T) {
 	}
 }
 
+func TestDetermineWithSessionPopulatesDirectTokenSessionKey(t *testing.T) {
+	r := newTestResolver(t)
+	body := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
+	req, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer direct-token")
+
+	auth, err := r.DetermineWithSession(req, body)
+	if err != nil {
+		t.Fatalf("determine with session failed: %v", err)
+	}
+	if auth.UseConfigToken {
+		t.Fatalf("expected direct token mode")
+	}
+	if auth.SessionKey == "" {
+		t.Fatalf("expected direct token session key")
+	}
+}
+
+func TestDetermineWithSessionCanonicalizesProtocolAliasPaths(t *testing.T) {
+	r := newTestResolver(t)
+	body := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}]}`)
+	paths := []string{"/v1/chat/completions", "/chat/completions", "/v1/v1/chat/completions"}
+
+	var base string
+	for _, path := range paths {
+		req, _ := http.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Authorization", "Bearer direct-token")
+		a, err := r.DetermineWithSession(req, body)
+		if err != nil {
+			t.Fatalf("determine with session for %s failed: %v", path, err)
+		}
+		if a.SessionKey == "" {
+			t.Fatalf("expected session key for %s", path)
+		}
+		if base == "" {
+			base = a.SessionKey
+			continue
+		}
+		if a.SessionKey != base {
+			t.Fatalf("expected %s to share session key with first path", path)
+		}
+	}
+}
+
 func TestDetermineRejectsRecentlyInvalidDirectToken(t *testing.T) {
 	r := newTestResolver(t)
 	req, _ := http.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)

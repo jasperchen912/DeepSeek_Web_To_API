@@ -146,6 +146,9 @@ STORE --> SAVE
 | `cache.response.disk_ttl_seconds` | `14400` |
 | `cache.response.disk_max_bytes` | `16000000000` |
 | `cache.response.max_body_bytes` | `67108864` |
+| `cache.session.enabled` | `true` |
+| `cache.session.ttl_seconds` | `7200` |
+| `cache.session.max_entries` | `50000` |
 
 **章节来源**
 - [config.example.json](file://config.example.json)

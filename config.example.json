@@ -82,6 +82,11 @@
       "disk_ttl_seconds": 14400,
       "disk_max_bytes": 16000000000,
       "max_body_bytes": 67108864
+    },
+    "session": {
+      "enabled": true,
+      "ttl_seconds": 7200,
+      "max_entries": 50000
     }
   },
   "runtime": {

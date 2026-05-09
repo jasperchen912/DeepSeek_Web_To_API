@@ -117,6 +117,11 @@ func (r *Resolver) DetermineWithSession(req *http.Request, body []byte) (*Reques
 	}
 	callerID := callerTokenID(callerKey)
 	if !r.Store.HasAPIKey(callerKey) {
+		sessionKey := ""
+		if len(body) > 0 {
+			callerHash := account.CallerHash(callerKey)
+			sessionKey = sessionKeyFromRequest(req, callerHash, body)
+		}
 		if r.directTokenBlocked(callerID, time.Now()) {
 			return nil, ErrInvalidDirectToken
 		}
@@ -124,6 +129,7 @@ func (r *Resolver) DetermineWithSession(req *http.Request, body []byte) (*Reques
 			UseConfigToken: false,
 			DeepSeekToken:  callerKey,
 			CallerID:       callerID,
+			SessionKey:     sessionKey,
 			resolver:       r,
 			TriedAccounts:  map[string]bool{},
 		}, nil
@@ -178,11 +184,29 @@ func sessionKeyFromRequest(req *http.Request, callerHash [32]byte, body []byte) 
 		return ""
 	}
 	if req != nil && req.URL != nil {
-		if path := strings.TrimSpace(req.URL.Path); path != "" {
+		if path := canonicalSessionRequestPath(req.URL.Path); path != "" {
 			return account.ScopedSessionKey(callerHash, "http:"+path+":body:"+bodyKey)
 		}
 	}
 	return bodyKey
+}
+
+func canonicalSessionRequestPath(path string) string {
+	path = strings.TrimSpace(path)
+	switch path {
+	case "/chat/completions", "/v1/v1/chat/completions":
+		return "/v1/chat/completions"
+	case "/responses", "/v1/v1/responses":
+		return "/v1/responses"
+	case "/embeddings", "/v1/v1/embeddings":
+		return "/v1/embeddings"
+	case "/anthropic/v1/messages", "/messages", "/v1/v1/messages":
+		return "/v1/messages"
+	case "/anthropic/v1/messages/count_tokens", "/messages/count_tokens", "/v1/v1/messages/count_tokens":
+		return "/v1/messages/count_tokens"
+	default:
+		return path
+	}
 }
 
 func openClawMetadataSessionScope(body []byte) string {

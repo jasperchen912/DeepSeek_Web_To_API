@@ -8,6 +8,8 @@ import (
 	"DeepSeek_Web_To_API/internal/auth"
 	"DeepSeek_Web_To_API/internal/config"
 	dsclient "DeepSeek_Web_To_API/internal/deepseek/client"
+	"DeepSeek_Web_To_API/internal/promptcache"
+	"DeepSeek_Web_To_API/internal/sessioncache"
 )
 
 type ConfigStore interface {
@@ -55,6 +57,14 @@ type PoolController interface {
 
 type ResponseCacheStatsProvider interface {
 	Stats() map[string]any
+}
+
+type SessionCacheStatsProvider interface {
+	Stats() sessioncache.Stats
+}
+
+type PromptCacheStatsProvider interface {
+	Stats() promptcache.Stats
 }
 
 type OpenAIChatCaller interface {
