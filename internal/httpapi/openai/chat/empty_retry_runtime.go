@@ -112,6 +112,7 @@ func (h *Handler) collectChatNonStreamAttempt(w http.ResponseWriter, resp *http.
 }
 
 func (h *Handler) finishChatNonStreamResult(w http.ResponseWriter, result chatNonStreamResult, attempts int, usagePrompt string, refFileTokens int, requireToolCall bool, historySession *chatHistorySession) {
+	h.recordPromptCacheUsage(result.promptCacheUsage)
 	if requireToolCall && result.detectedCalls == 0 {
 		message := "tool_choice requires at least one valid tool call."
 		if historySession != nil {
@@ -172,11 +173,13 @@ func (h *Handler) handleStreamWithRetry(w http.ResponseWriter, r *http.Request, 
 	for {
 		terminalWritten, retryable := h.consumeChatStreamAttempt(r, currentResp, streamRuntime, initialType, thinkingEnabled, historySession, attempts < emptyOutputRetryMaxAttempts())
 		if terminalWritten {
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			logChatStreamTerminal(streamRuntime, attempts)
 			return
 		}
 		if !retryable || !emptyOutputRetryEnabled() || attempts >= emptyOutputRetryMaxAttempts() {
 			streamRuntime.finalize("stop", false)
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			recordChatStreamHistory(streamRuntime, historySession)
 			config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "chat.completions", "stream", true, "retry_attempts", attempts, "success_source", "none")
 			return
@@ -187,12 +190,14 @@ func (h *Handler) handleStreamWithRetry(w http.ResponseWriter, r *http.Request, 
 		retryPow, prepared := h.prepareChatEmptyOutputRetry(r.Context(), a, payload, retryPayload, pow, attempts, true, historySession, activeSessionID)
 		if !prepared {
 			streamRuntime.finalize("stop", false)
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			recordChatStreamHistory(streamRuntime, historySession)
 			config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "chat.completions", "stream", true, "retry_attempts", attempts, "success_source", "none")
 			return
 		}
 		nextResp, err := h.DS.CallCompletion(r.Context(), a, retryPayload, retryPow, 3)
 		if err != nil {
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			failChatStreamCompletionError(streamRuntime, historySession, err)
 			config.Logger.Warn("[openai_empty_retry] retry request failed", "surface", "chat.completions", "stream", true, "retry_attempt", attempts, "error", err)
 			return
@@ -201,6 +206,7 @@ func (h *Handler) handleStreamWithRetry(w http.ResponseWriter, r *http.Request, 
 			defer func() { _ = nextResp.Body.Close() }()
 			body, _ := io.ReadAll(nextResp.Body)
 			failChatStreamRetry(streamRuntime, historySession, nextResp.StatusCode, string(body), "error")
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			return
 		}
 		streamRuntime.finalPrompt = usagePromptWithEmptyOutputRetry(finalPrompt, attempts)

@@ -12,7 +12,9 @@ import (
 
 	"DeepSeek_Web_To_API/internal/auth"
 	"DeepSeek_Web_To_API/internal/chathistory"
+	dsclient "DeepSeek_Web_To_API/internal/deepseek/client"
 	"DeepSeek_Web_To_API/internal/promptcache"
+	"DeepSeek_Web_To_API/internal/sessioncache"
 )
 
 type directClaudeAuthStub struct {
@@ -24,7 +26,7 @@ func (s *directClaudeAuthStub) Determine(req *http.Request) (*auth.RequestAuth, 
 	if req != nil {
 		s.seenAffinityHeader = req.Header.Get(auth.SessionAffinityHeader)
 	}
-	return &auth.RequestAuth{UseConfigToken: false, DeepSeekToken: "direct-token", CallerID: "caller:test", AccountID: "acc-direct", TriedAccounts: map[string]bool{}}, nil
+	return &auth.RequestAuth{UseConfigToken: false, DeepSeekToken: "direct-token", CallerID: "caller:test", AccountID: "acc-direct", SessionKey: s.seenAffinityHeader, TriedAccounts: map[string]bool{}}, nil
 }
 
 func (s *directClaudeAuthStub) DetermineWithSession(req *http.Request, body []byte) (*auth.RequestAuth, error) {
@@ -32,7 +34,7 @@ func (s *directClaudeAuthStub) DetermineWithSession(req *http.Request, body []by
 		s.seenAffinityHeader = req.Header.Get(auth.SessionAffinityHeader)
 	}
 	s.seenBody = append([]byte(nil), body...)
-	return &auth.RequestAuth{UseConfigToken: false, DeepSeekToken: "direct-token", CallerID: "caller:test", AccountID: "acc-direct", TriedAccounts: map[string]bool{}}, nil
+	return &auth.RequestAuth{UseConfigToken: false, DeepSeekToken: "direct-token", CallerID: "caller:test", AccountID: "acc-direct", SessionKey: s.seenAffinityHeader, TriedAccounts: map[string]bool{}}, nil
 }
 
 func (s *directClaudeAuthStub) DetermineCaller(req *http.Request) (*auth.RequestAuth, error) {
@@ -45,11 +47,20 @@ func (s *directClaudeAuthStub) DetermineCaller(req *http.Request) (*auth.Request
 func (*directClaudeAuthStub) Release(_ *auth.RequestAuth) {}
 
 type directClaudeDSStub struct {
-	resp        *http.Response
-	seenPayload map[string]any
+	resp           *http.Response
+	resps          []*http.Response
+	callErrors     []error
+	createSessions []string
+	seenPayload    map[string]any
+	createCalls    int
+	callCalls      int
 }
 
 func (s *directClaudeDSStub) CreateSession(_ context.Context, _ *auth.RequestAuth, _ int) (string, error) {
+	s.createCalls++
+	if idx := s.createCalls - 1; idx >= 0 && idx < len(s.createSessions) {
+		return s.createSessions[idx], nil
+	}
 	return "session-direct", nil
 }
 
@@ -58,7 +69,14 @@ func (s *directClaudeDSStub) GetPow(_ context.Context, _ *auth.RequestAuth, _ in
 }
 
 func (s *directClaudeDSStub) CallCompletion(_ context.Context, _ *auth.RequestAuth, payload map[string]any, _ string, _ int) (*http.Response, error) {
+	s.callCalls++
 	s.seenPayload = payload
+	if idx := s.callCalls - 1; idx >= 0 && idx < len(s.callErrors) && s.callErrors[idx] != nil {
+		return nil, s.callErrors[idx]
+	}
+	if idx := s.callCalls - 1; idx >= 0 && idx < len(s.resps) && s.resps[idx] != nil {
+		return s.resps[idx], nil
+	}
 	return s.resp, nil
 }
 
@@ -167,6 +185,82 @@ func TestClaudeMessagesObservesPromptCacheControlHint(t *testing.T) {
 	}
 }
 
+func TestClaudeMessagesDirectReusesDeepSeekSessionCache(t *testing.T) {
+	cache := sessioncache.New(sessioncache.Options{})
+	dsStub := &directClaudeDSStub{}
+	h := &Handler{
+		Store:        streamStatusClaudeStoreStub{},
+		Auth:         &directClaudeAuthStub{},
+		DS:           dsStub,
+		SessionCache: cache,
+	}
+	reqBody := `{"model":"claude-sonnet-4-5","metadata":{"session_id":"thread-a"},"messages":[{"role":"user","content":"hi"}]}`
+
+	for i := 0; i < 2; i++ {
+		dsStub.resp = makeClaudeSSEHTTPResponse(
+			`data: {"p":"response/content","v":"ok"}`,
+			`data: [DONE]`,
+		)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+		req.Header.Set("Authorization", "Bearer local-key")
+		rec := httptest.NewRecorder()
+		h.Messages(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d expected 200, got %d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+		if got := dsStub.seenPayload["chat_session_id"]; got != "session-direct" {
+			t.Fatalf("request %d expected cached session-direct payload, got %#v", i+1, dsStub.seenPayload)
+		}
+	}
+
+	if dsStub.createCalls != 1 {
+		t.Fatalf("CreateSession calls=%d want=1", dsStub.createCalls)
+	}
+	stats := cache.Stats()
+	if stats.Misses != 1 || stats.Hits != 1 || stats.Entries != 1 {
+		t.Fatalf("unexpected session cache stats: %#v", stats)
+	}
+}
+
+func TestClaudeMessagesDirectInvalidatesStaleCachedSessionAndRetries(t *testing.T) {
+	cache := sessioncache.New(sessioncache.Options{})
+	dsStub := &directClaudeDSStub{
+		createSessions: []string{"stale-session", "fresh-session"},
+		callErrors: []error{
+			&dsclient.RequestFailure{Op: "completion", Kind: dsclient.FailureUpstreamStatus, StatusCode: http.StatusNotFound, Message: "chat_session not found"},
+			nil,
+		},
+		resps: []*http.Response{
+			nil,
+			makeClaudeSSEHTTPResponse(
+				`data: {"p":"response/content","v":"ok"}`,
+				`data: [DONE]`,
+			),
+		},
+	}
+	h := &Handler{
+		Store:        streamStatusClaudeStoreStub{},
+		Auth:         &directClaudeAuthStub{},
+		DS:           dsStub,
+		SessionCache: cache,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5","metadata":{"session_id":"thread-a"},"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer local-key")
+	rec := httptest.NewRecorder()
+	h.Messages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after stale session retry, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if dsStub.createCalls != 2 || dsStub.callCalls != 2 {
+		t.Fatalf("expected one retry, createCalls=%d callCalls=%d", dsStub.createCalls, dsStub.callCalls)
+	}
+	if got := dsStub.seenPayload["chat_session_id"]; got != "fresh-session" {
+		t.Fatalf("expected retry payload to use fresh session, got %#v", dsStub.seenPayload)
+	}
+}
+
 func TestClaudeMessagesDirectNonStreamStripsDefaultThinking(t *testing.T) {
 	dsStub := &directClaudeDSStub{
 		resp: makeClaudeSSEHTTPResponse(
@@ -208,6 +302,7 @@ func TestClaudeMessagesDirectNonStreamStripsDefaultThinking(t *testing.T) {
 }
 
 func TestClaudeMessagesDirectNonStreamPreservesDeepSeekPromptCacheUsage(t *testing.T) {
+	cache := promptcache.New(promptcache.Options{})
 	dsStub := &directClaudeDSStub{
 		resp: makeClaudeSSEHTTPResponse(
 			`data: {"p":"response/content","v":"visible"}`,
@@ -216,9 +311,10 @@ func TestClaudeMessagesDirectNonStreamPreservesDeepSeekPromptCacheUsage(t *testi
 		),
 	}
 	h := &Handler{
-		Store: streamStatusClaudeStoreStub{},
-		Auth:  &directClaudeAuthStub{},
-		DS:    dsStub,
+		Store:       streamStatusClaudeStoreStub{},
+		Auth:        &directClaudeAuthStub{},
+		DS:          dsStub,
+		PromptCache: cache,
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`))
@@ -239,6 +335,10 @@ func TestClaudeMessagesDirectNonStreamPreservesDeepSeekPromptCacheUsage(t *testi
 	}
 	if _, ok := usage["cache_creation_input_tokens"]; ok {
 		t.Fatalf("DeepSeek miss tokens must not be reported as Claude cache creation tokens: %#v", usage)
+	}
+	stats := cache.Stats()
+	if stats.ActualSamples != 1 || stats.ActualHitTokens != 64 || stats.ActualMissTokens != 32 || stats.ActualHitRate != 66.67 {
+		t.Fatalf("unexpected actual prompt cache stats: %#v", stats)
 	}
 }
 

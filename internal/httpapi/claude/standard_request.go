@@ -68,6 +68,7 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 			PromptPrefixTokens:   prefixInfo.PrefixTokens,
 			PromptTailTokens:     prefixInfo.TailTokens,
 			PromptPrefixEligible: prefixInfo.Eligible,
+			PromptPrefixReason:   prefixInfo.Reason,
 			FinalPrompt:          finalPrompt,
 			ToolNames:            toolNames,
 			Stream:               util.ToBool(req["stream"]),

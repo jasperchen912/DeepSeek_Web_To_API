@@ -15,6 +15,7 @@ type PromptPrefixInfo struct {
 	PrefixTokens int
 	TailTokens   int
 	Eligible     bool
+	Reason       string
 }
 
 func AnalyzeOpenAIPromptPrefix(messagesRaw []any, toolsRaw any, traceID string, toolPolicy ToolChoicePolicy, thinkingEnabled bool, model string) PromptPrefixInfo {
@@ -23,13 +24,13 @@ func AnalyzeOpenAIPromptPrefix(messagesRaw []any, toolsRaw any, traceID string, 
 		messages, _ = injectToolPrompt(messages, tools, toolPolicy)
 	}
 	if len(messages) < 2 {
-		return PromptPrefixInfo{}
+		return PromptPrefixInfo{Reason: "no_stable_prefix"}
 	}
 	prefixMessages := clonePromptMessages(messages[:len(messages)-1])
 	tailMessage := messages[len(messages)-1]
 	prefixText := strings.TrimSpace(prompt.MessagesPrepareWithThinking(prefixMessages, thinkingEnabled))
 	if prefixText == "" {
-		return PromptPrefixInfo{}
+		return PromptPrefixInfo{Reason: "no_stable_prefix"}
 	}
 	tailText := strings.TrimSpace(prompt.NormalizeContent(tailMessage["content"]))
 	return PromptPrefixInfo{

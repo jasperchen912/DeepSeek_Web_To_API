@@ -69,7 +69,7 @@ func TestAnalyzeOpenAIPromptPrefixSingleUserIsNotEligible(t *testing.T) {
 	info := AnalyzeOpenAIPromptPrefix([]any{
 		map[string]any{"role": "user", "content": "hello"},
 	}, nil, "", DefaultToolChoicePolicy(), false, "deepseek-v4-flash")
-	if info.Eligible || info.Hash != "" || info.PrefixTokens != 0 {
+	if info.Eligible || info.Hash != "" || info.PrefixTokens != 0 || info.Reason != "no_stable_prefix" {
 		t.Fatalf("expected single pure user request to be ineligible, got %#v", info)
 	}
 }

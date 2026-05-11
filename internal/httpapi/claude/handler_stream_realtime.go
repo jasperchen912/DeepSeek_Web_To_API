@@ -73,6 +73,7 @@ func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Requ
 		},
 		OnFinalize: func(reason streamengine.StopReason, scannerErr error) {
 			streamRuntime.onFinalize(reason, scannerErr)
+			h.recordClaudePromptCacheUsage(streamRuntime.promptCacheUsage)
 			if historySession == nil {
 				return
 			}

@@ -185,7 +185,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		sessionID = nextSessionID
 	}
 	if err != nil && h.SessionCache != nil && sessionResolution.Key != "" && sessioncache.InvalidatesCompletionError(err) {
-		h.SessionCache.Invalidate(sessionResolution.Key)
+		h.SessionCache.RecordInvalidSession(sessionResolution.Key)
 		config.Logger.Info("[session_cache] invalid session; retrying with fresh session", "surface", "chat.completions", "account", authAccountID(a), "session_key", shortTimingValue(a.SessionKey), "from_cache", sessionResolution.FromCache)
 		sessionID, err = h.DS.CreateSession(r.Context(), a, 3)
 		if err != nil {
@@ -256,6 +256,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"prompt_prefix_hash", stdReq.PromptPrefixHash,
 		"prompt_prefix_reused", stdReq.PromptPrefixReused,
 		"prompt_prefix_eligible", stdReq.PromptPrefixEligible,
+		"prompt_prefix_reason", stdReq.PromptPrefixReason,
 		"prompt_prefix_tokens", stdReq.PromptPrefixTokens,
 		"prompt_tail_tokens", stdReq.PromptTailTokens,
 		"ref_file_tokens", refFileTokens,
@@ -353,6 +354,7 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, co
 		return
 	}
 	result := sse.CollectStream(resp, thinkingEnabled, true)
+	h.recordPromptCacheUsage(result.PromptCacheUsage)
 
 	stripReferenceMarkers := h.compatStripReferenceMarkers()
 	finalThinking := cleanVisibleOutput(result.Thinking, stripReferenceMarkers)
@@ -459,6 +461,7 @@ func (h *Handler) handleStream(w http.ResponseWriter, r *http.Request, resp *htt
 			} else {
 				streamRuntime.finalize("stop", false)
 			}
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			if historySession == nil {
 				return
 			}

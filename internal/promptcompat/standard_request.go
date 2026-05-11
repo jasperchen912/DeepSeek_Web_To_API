@@ -23,6 +23,7 @@ type StandardRequest struct {
 	PromptTailTokens              int
 	PromptPrefixReused            bool
 	PromptPrefixEligible          bool
+	PromptPrefixReason            string
 	ToolsRaw                      any
 	FinalPrompt                   string
 	ToolNames                     []string

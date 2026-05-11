@@ -116,6 +116,7 @@ func (h *Handler) collectResponsesNonStreamAttempt(w http.ResponseWriter, resp *
 }
 
 func (h *Handler) finishResponsesNonStreamResult(w http.ResponseWriter, result responsesNonStreamResult, attempts int, owner, responseID string, toolChoice promptcompat.ToolChoicePolicy, traceID string, historySession *historycapture.Session, usagePrompt string, refFileTokens int) {
+	h.recordPromptCacheUsage(result.promptCacheUsage)
 	if len(result.parsed.Calls) == 0 && writeUpstreamEmptyOutputError(w, result.text, result.thinking, result.contentFilter) {
 		if historySession != nil {
 			status, message, code := upstreamEmptyOutputDetail(result.contentFilter, result.text, result.thinking)
@@ -170,12 +171,14 @@ func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.
 	for {
 		terminalWritten, retryable := h.consumeResponsesStreamAttempt(r, currentResp, streamRuntime, initialType, thinkingEnabled, attempts < emptyOutputRetryMaxAttempts(), historySession)
 		if terminalWritten {
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			recordResponsesStreamHistory(streamRuntime, historySession)
 			logResponsesStreamTerminal(streamRuntime, attempts)
 			return
 		}
 		if !retryable || !emptyOutputRetryEnabled() || attempts >= emptyOutputRetryMaxAttempts() {
 			streamRuntime.finalize("stop", false)
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			recordResponsesStreamHistory(streamRuntime, historySession)
 			config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "responses", "stream", true, "retry_attempts", attempts, "success_source", "none", "error_code", streamRuntime.finalErrorCode)
 			return
@@ -186,12 +189,14 @@ func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.
 		retryPow, prepared := h.prepareResponsesEmptyOutputRetry(r.Context(), a, payload, retryPayload, pow, attempts, true, historySession)
 		if !prepared {
 			streamRuntime.finalize("stop", false)
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			recordResponsesStreamHistory(streamRuntime, historySession)
 			config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "responses", "stream", true, "retry_attempts", attempts, "success_source", "none", "error_code", streamRuntime.finalErrorCode)
 			return
 		}
 		nextResp, err := h.DS.CallCompletion(r.Context(), a, retryPayload, retryPow, 3)
 		if err != nil {
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			failResponsesStreamCompletionError(streamRuntime, historySession, err)
 			config.Logger.Warn("[openai_empty_retry] retry request failed", "surface", "responses", "stream", true, "retry_attempt", attempts, "error", err)
 			return
@@ -200,6 +205,7 @@ func (h *Handler) handleResponsesStreamWithRetry(w http.ResponseWriter, r *http.
 			defer func() { _ = nextResp.Body.Close() }()
 			body, _ := io.ReadAll(nextResp.Body)
 			streamRuntime.failResponse(nextResp.StatusCode, strings.TrimSpace(string(body)), "error")
+			h.recordPromptCacheUsage(streamRuntime.promptCacheUsage)
 			recordResponsesStreamHistory(streamRuntime, historySession)
 			return
 		}

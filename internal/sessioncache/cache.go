@@ -16,23 +16,31 @@ import (
 )
 
 const (
-	defaultTTL        = 2 * time.Hour
-	defaultMaxEntries = 50000
+	defaultTTL                  = 2 * time.Hour
+	defaultMaxEntries           = 50000
+	defaultInvalidCooldown      = 30 * time.Second
+	invalidCooldownThreshold    = 2
+	invalidCooldownStreakWindow = 2 * time.Minute
 )
 
 type Options struct {
-	TTL        time.Duration
-	MaxEntries int
+	TTL             time.Duration
+	MaxEntries      int
+	InvalidCooldown time.Duration
 }
 
 type Stats struct {
-	Hits               int64 `json:"hits"`
-	Misses             int64 `json:"misses"`
-	Stores             int64 `json:"stores"`
-	InflightWaits      int64 `json:"inflight_waits"`
-	Invalidations      int64 `json:"invalidations"`
-	Entries            int64 `json:"entries"`
-	DisabledAutoDelete int64 `json:"disabled_auto_delete"`
+	Hits                    int64 `json:"hits"`
+	Misses                  int64 `json:"misses"`
+	Stores                  int64 `json:"stores"`
+	InflightWaits           int64 `json:"inflight_waits"`
+	Invalidations           int64 `json:"invalidations"`
+	Entries                 int64 `json:"entries"`
+	DisabledAutoDelete      int64 `json:"disabled_auto_delete"`
+	InvalidSessionErrors    int64 `json:"invalid_session_errors"`
+	InvalidSessionCooldowns int64 `json:"invalid_session_cooldowns"`
+	CooldownBypasses        int64 `json:"cooldown_bypasses"`
+	CooldownEntries         int64 `json:"cooldown_entries"`
 }
 
 type Value struct {
@@ -60,6 +68,12 @@ type entry struct {
 	updatedAt time.Time
 }
 
+type invalidState struct {
+	count  int
+	lastAt time.Time
+	until  time.Time
+}
+
 type call struct {
 	done  chan struct{}
 	value Value
@@ -67,19 +81,24 @@ type call struct {
 }
 
 type Cache struct {
-	mu       sync.Mutex
-	ttl      time.Duration
-	maxItems int
-	now      func() time.Time
-	entries  map[string]entry
-	inflight map[string]*call
+	mu              sync.Mutex
+	ttl             time.Duration
+	maxItems        int
+	invalidCooldown time.Duration
+	now             func() time.Time
+	entries         map[string]entry
+	inflight        map[string]*call
+	invalids        map[string]invalidState
 
-	hits               int64
-	misses             int64
-	stores             int64
-	inflightWaits      int64
-	invalidations      int64
-	disabledAutoDelete int64
+	hits                    int64
+	misses                  int64
+	stores                  int64
+	inflightWaits           int64
+	invalidations           int64
+	disabledAutoDelete      int64
+	invalidSessionErrors    int64
+	invalidSessionCooldowns int64
+	cooldownBypasses        int64
 }
 
 func New(opts Options) *Cache {
@@ -91,12 +110,18 @@ func New(opts Options) *Cache {
 	if maxItems <= 0 {
 		maxItems = defaultMaxEntries
 	}
+	invalidCooldown := opts.InvalidCooldown
+	if invalidCooldown <= 0 {
+		invalidCooldown = defaultInvalidCooldown
+	}
 	return &Cache{
-		ttl:      ttl,
-		maxItems: maxItems,
-		now:      time.Now,
-		entries:  map[string]entry{},
-		inflight: map[string]*call{},
+		ttl:             ttl,
+		maxItems:        maxItems,
+		invalidCooldown: invalidCooldown,
+		now:             time.Now,
+		entries:         map[string]entry{},
+		inflight:        map[string]*call{},
+		invalids:        map[string]invalidState{},
 	}
 }
 
@@ -113,6 +138,13 @@ func (c *Cache) GetOrCreate(ctx context.Context, key string, create func(context
 	now := c.currentTime()
 	c.mu.Lock()
 	c.pruneLocked(now)
+	if c.cooldownActiveLocked(key, now) {
+		c.misses++
+		c.cooldownBypasses++
+		c.mu.Unlock()
+		value, err := create(ctx)
+		return normalizeValue(value), Result{Key: key}, err
+	}
 	if item, ok := c.entries[key]; ok && now.Sub(item.updatedAt) <= c.ttl && validValue(item.value) {
 		item.updatedAt = now
 		c.entries[key] = item
@@ -142,9 +174,12 @@ func (c *Cache) GetOrCreate(ctx context.Context, key string, create func(context
 	c.mu.Lock()
 	if err == nil && validValue(value) {
 		now := c.currentTime()
-		c.entries[key] = entry{value: value, updatedAt: now}
-		c.stores++
 		c.pruneLocked(now)
+		if !c.cooldownActiveLocked(key, now) {
+			c.entries[key] = entry{value: value, updatedAt: now}
+			c.stores++
+			c.pruneLocked(now)
+		}
 	}
 	current.value = value
 	current.err = err
@@ -163,6 +198,11 @@ func (c *Cache) Store(key string, value Value) {
 	}
 	now := c.currentTime()
 	c.mu.Lock()
+	c.pruneLocked(now)
+	if c.cooldownActiveLocked(key, now) {
+		c.mu.Unlock()
+		return
+	}
 	c.entries[key] = entry{value: value, updatedAt: now}
 	c.stores++
 	c.pruneLocked(now)
@@ -179,6 +219,37 @@ func (c *Cache) Invalidate(key string) {
 		delete(c.entries, key)
 		c.invalidations++
 	}
+	c.mu.Unlock()
+}
+
+func (c *Cache) RecordInvalidSession(key string) {
+	key = strings.TrimSpace(key)
+	if c == nil || key == "" {
+		return
+	}
+	now := c.currentTime()
+	c.mu.Lock()
+	if _, ok := c.entries[key]; ok {
+		delete(c.entries, key)
+		c.invalidations++
+	}
+	c.invalidSessionErrors++
+	if c.invalids == nil {
+		c.invalids = map[string]invalidState{}
+	}
+	state := c.invalids[key]
+	if state.lastAt.IsZero() || now.Sub(state.lastAt) > invalidCooldownStreakWindow {
+		state.count = 1
+	} else {
+		state.count++
+	}
+	state.lastAt = now
+	if state.count >= invalidCooldownThreshold {
+		state.until = now.Add(c.invalidCooldown)
+		c.invalidSessionCooldowns++
+	}
+	c.invalids[key] = state
+	c.pruneLocked(now)
 	c.mu.Unlock()
 }
 
@@ -233,13 +304,17 @@ func (c *Cache) Stats() Stats {
 	c.mu.Lock()
 	c.pruneLocked(now)
 	out := Stats{
-		Hits:               c.hits,
-		Misses:             c.misses,
-		Stores:             c.stores,
-		InflightWaits:      c.inflightWaits,
-		Invalidations:      c.invalidations,
-		Entries:            int64(len(c.entries)),
-		DisabledAutoDelete: c.disabledAutoDelete,
+		Hits:                    c.hits,
+		Misses:                  c.misses,
+		Stores:                  c.stores,
+		InflightWaits:           c.inflightWaits,
+		Invalidations:           c.invalidations,
+		Entries:                 int64(len(c.entries)),
+		DisabledAutoDelete:      c.disabledAutoDelete,
+		InvalidSessionErrors:    c.invalidSessionErrors,
+		InvalidSessionCooldowns: c.invalidSessionCooldowns,
+		CooldownBypasses:        c.cooldownBypasses,
+		CooldownEntries:         c.cooldownEntriesLocked(now),
 	}
 	c.mu.Unlock()
 	return out
@@ -272,6 +347,29 @@ func (c *Cache) pruneLocked(now time.Time) {
 		}
 		delete(c.entries, oldestKey)
 	}
+	for key, state := range c.invalids {
+		if !state.until.IsZero() && state.until.After(now) {
+			continue
+		}
+		if now.Sub(state.lastAt) > invalidCooldownStreakWindow {
+			delete(c.invalids, key)
+		}
+	}
+}
+
+func (c *Cache) cooldownActiveLocked(key string, now time.Time) bool {
+	state, ok := c.invalids[key]
+	return ok && !state.until.IsZero() && state.until.After(now)
+}
+
+func (c *Cache) cooldownEntriesLocked(now time.Time) int64 {
+	var count int64
+	for _, state := range c.invalids {
+		if !state.until.IsZero() && state.until.After(now) {
+			count++
+		}
+	}
+	return count
 }
 
 func Key(in KeyInput) string {

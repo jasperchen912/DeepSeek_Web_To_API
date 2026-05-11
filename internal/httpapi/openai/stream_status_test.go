@@ -14,6 +14,7 @@ import (
 
 	"DeepSeek_Web_To_API/internal/auth"
 	dsclient "DeepSeek_Web_To_API/internal/deepseek/client"
+	"DeepSeek_Web_To_API/internal/promptcache"
 )
 
 type streamStatusAuthStub struct{}
@@ -822,9 +823,11 @@ func TestResponsesNonStreamUsageIgnoresPromptAndOutputTokenUsage(t *testing.T) {
 }
 
 func TestChatNonStreamPreservesDeepSeekPromptCacheUsage(t *testing.T) {
+	cache := promptcache.New(promptcache.Options{})
 	h := &openAITestSurface{
-		Store: mockOpenAIConfig{wideInput: true},
-		Auth:  streamStatusAuthStub{},
+		Store:       mockOpenAIConfig{wideInput: true},
+		Auth:        streamStatusAuthStub{},
+		PromptCache: cache,
 		DS: streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(
 			`data: {"p":"response/content","v":"ok"}`,
 			`data: {"p":"response","o":"BATCH","v":[{"p":"token_usage","v":{"prompt_tokens":999,"completion_tokens":999,"prompt_cache_hit_tokens":128,"prompt_cache_miss_tokens":64}},{"p":"quasi_status","v":"FINISHED"}]}`,
@@ -865,12 +868,22 @@ func TestChatNonStreamPreservesDeepSeekPromptCacheUsage(t *testing.T) {
 	if got, _ := usage["cacheRead"].(float64); int(got) != 128 {
 		t.Fatalf("expected cacheRead=128, usage=%#v", usage)
 	}
+	stats := cache.Stats()
+	if stats.ActualSamples != 1 || stats.ActualHitTokens != 128 || stats.ActualMissTokens != 64 || stats.ActualHitRate != 66.67 {
+		t.Fatalf("expected chat actual prompt cache stats, got %#v", stats)
+	}
+	surface := stats.BySurface["chat.completions"]
+	if surface.ActualSamples != 1 || surface.ActualHitTokens != 128 || surface.ActualMissTokens != 64 || surface.ActualHitRate != 66.67 {
+		t.Fatalf("expected chat surface actual prompt cache stats, got %#v", surface)
+	}
 }
 
 func TestResponsesStreamPreservesDeepSeekPromptCacheUsage(t *testing.T) {
+	cache := promptcache.New(promptcache.Options{})
 	h := &openAITestSurface{
-		Store: mockOpenAIConfig{wideInput: true},
-		Auth:  streamStatusAuthStub{},
+		Store:       mockOpenAIConfig{wideInput: true},
+		Auth:        streamStatusAuthStub{},
+		PromptCache: cache,
 		DS: streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(
 			`data: {"p":"response/content","v":"ok"}`,
 			`data: {"usage":{"prompt_cache_hit_tokens":42,"prompt_cache_miss_tokens":9}}`,
@@ -907,5 +920,13 @@ func TestResponsesStreamPreservesDeepSeekPromptCacheUsage(t *testing.T) {
 	details, _ := usage["input_tokens_details"].(map[string]any)
 	if got, _ := details["cached_tokens"].(float64); int(got) != 42 {
 		t.Fatalf("expected input cached_tokens=42, details=%#v", details)
+	}
+	stats := cache.Stats()
+	if stats.ActualSamples != 1 || stats.ActualHitTokens != 42 || stats.ActualMissTokens != 9 || stats.ActualHitRate != 82.35 {
+		t.Fatalf("expected responses actual prompt cache stats, got %#v", stats)
+	}
+	surface := stats.BySurface["responses"]
+	if surface.ActualSamples != 1 || surface.ActualHitTokens != 42 || surface.ActualMissTokens != 9 || surface.ActualHitRate != 82.35 {
+		t.Fatalf("expected responses surface actual prompt cache stats, got %#v", surface)
 	}
 }

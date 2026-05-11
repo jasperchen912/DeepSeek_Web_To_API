@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"DeepSeek_Web_To_API/internal/promptcache"
 	"DeepSeek_Web_To_API/internal/sse"
 	"encoding/json"
 	"io"
@@ -112,7 +113,8 @@ func TestHandleClaudeStreamRealtimeTextIncrementsWithEventHeaders(t *testing.T) 
 }
 
 func TestHandleClaudeStreamRealtimePreservesDeepSeekPromptCacheUsage(t *testing.T) {
-	h := &Handler{}
+	cache := promptcache.New(promptcache.Options{})
+	h := &Handler{PromptCache: cache}
 	resp := makeClaudeSSEHTTPResponse(
 		`data: {"p":"response/content","v":"Hi"}`,
 		`data: {"p":"response","o":"BATCH","v":[{"p":"token_usage","v":{"prompt_cache_hit_tokens":128,"prompt_cache_miss_tokens":16}}]}`,
@@ -134,6 +136,10 @@ func TestHandleClaudeStreamRealtimePreservesDeepSeekPromptCacheUsage(t *testing.
 	}
 	if _, ok := usage["cache_creation_input_tokens"]; ok {
 		t.Fatalf("DeepSeek miss tokens must not be reported as Claude cache creation tokens: %#v", usage)
+	}
+	stats := cache.Stats()
+	if stats.ActualSamples != 1 || stats.ActualHitTokens != 128 || stats.ActualMissTokens != 16 || stats.ActualHitRate != 88.89 {
+		t.Fatalf("unexpected actual prompt cache stats: %#v", stats)
 	}
 }
 

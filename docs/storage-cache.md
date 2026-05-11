@@ -136,21 +136,21 @@ Cache-->>Client: response
 - Claude Messages、CountTokens。
 - Gemini GenerateContent、StreamGenerateContent。
 
-缓存键包含调用方、规范化路径、查询参数、影响输出的请求头和规范化 JSON 请求体。`Content-Type`、`Accept` 等请求头会做等价规范化，减少 `application/json` 与 `application/json; charset=utf-8` 这类碎片。部分缓存控制字段会从 JSON key 中忽略，以提高相同内容请求的命中率。
+缓存键包含调用方、规范化路径、查询参数、影响输出的请求头和规范化 JSON 请求体。JSON 请求体只在 key 层 canonicalize：对象 key 排序、无意义空白消除，原始请求体仍按客户端提交内容转发上游。`Content-Type`、`Accept` 等请求头会做等价规范化，减少 `application/json` 与 `application/json; charset=utf-8` 这类碎片。部分缓存控制字段会从 JSON key 中忽略，以提高相同内容请求的命中率。
 
 响应缓存默认只缓存完整的非流式响应。OpenAI、Claude、Gemini 的 `stream=true` 请求以及 Gemini `:streamGenerateContent` 端点都会按 `stream_request` 计入不可缓存原因，不写入响应缓存；如果上游返回 `text/event-stream`，也会按 `stream_response` 拒绝写入。不可缓存统计还会区分 `oversized_request`、`missing_owner`、`status_non_2xx`、`response_no_store`、`set_cookie`、`request_no_cache`、`request_no_store`、`request_bypass` 等原因，并在管理台总览的 `cache.uncacheable_reasons` 中按原因透出，便于判断命中率低是语义不可缓存、客户端主动绕过，还是缓存碎片导致。并发 miss 合并指标会通过 `singleflight_hits` 和 `inflight_waits` 展示，用来观察热点请求是否被合并复用。
 
 ### 会话缓存
 
-OpenAI Chat Completions 和 Responses 会在 cache miss 进入上游时复用 DeepSeek `chat_session_id`。缓存只保存远端 session ID，不保存 prompt 正文，也不会把普通请求改成 `parent_message_id` 链式续写。
+OpenAI Chat Completions、Responses 和 Claude Messages direct path 会在 cache miss 进入上游时复用 DeepSeek `chat_session_id`。缓存只保存远端 session ID，不保存 prompt 正文，也不会把普通请求改成 `parent_message_id` 链式续写。
 
-会话缓存按调用方、稳定 `SessionKey`、账号或直通 token hash、API surface、模型/model_type、thinking/search 隔离。默认开启，TTL 为 `cache.session.ttl_seconds=7200`，最多 `cache.session.max_entries=50000` 条；命中会刷新内存 TTL，容量淘汰按最近访问或写入时间近似 LRU。当 `auto_delete.mode` 为 `single` 或 `all` 时会自动绕过，避免复用已删除的远端 session。协议别名路径会归一到同一个 `SessionKey`，例如 `/v1/chat/completions`、`/chat/completions`、`/v1/v1/chat/completions` 会共享 affinity 作用域。若远端刚创建的 session 或缓存命中的 session 立刻返回 not found/expired，系统会失效该 key 并重建一次。
+会话缓存按调用方、稳定 `SessionKey`、账号或直通 token hash、API surface、模型/model_type、thinking/search 隔离。默认开启，TTL 为 `cache.session.ttl_seconds=7200`，最多 `cache.session.max_entries=50000` 条；命中会刷新内存 TTL，容量淘汰按最近访问或写入时间近似 LRU。当 `auto_delete.mode` 为 `single` 或 `all` 时会自动绕过，避免复用已删除的远端 session。协议别名路径会归一到同一个 `SessionKey`，例如 `/v1/chat/completions`、`/chat/completions`、`/v1/v1/chat/completions` 会共享 affinity 作用域；Claude Messages 的 `/anthropic/v1/messages`、`/v1/messages`、`/messages` 也会进入同一 affinity 规范化流程。若远端刚创建的 session 或缓存命中的 session 立刻返回 not found/expired，系统会失效该 key 并重建一次；同一 key 在短窗口内重复失效会进入 30 秒 cooldown，期间绕过读取和写入，管理台通过 `session_cache.invalid_session_errors`、`invalid_session_cooldowns`、`cooldown_bypasses`、`cooldown_entries` 暴露异常程度。
 
 ### Prompt Prefix 诊断
 
 OpenAI Chat Completions、Responses 和 Claude Messages direct path 会记录 prompt prefix cache 诊断数据，用于对齐 OpenAI/Claude 的“稳定前缀更容易命中上游缓存”语义。诊断 tracker 只保存 prefix hash、估算 token 和时间戳，不保存 prompt 原文，也不会复用旧答案。
 
-prefix 边界固定为 tools/system/developer/历史消息以及最后一条消息之前的内容；最后一条消息视为 tail。请求体 `prompt_cache_key`、请求头 `X-DeepSeek-Web-To-API-Prompt-Cache-Key`，以及 Claude Messages 的顶层或块级 `cache_control` 会作为 hint 参与 tracker 分组，但不会转发给 DeepSeek，也不会加入完整响应缓存 key。Claude hint 只记录缓存控制类型、TTL 和 breakpoint 数量，不记录 prompt 原文。管理台总览的 `prompt_cache` 字段展示 observed、eligible、reused、reuse_rate、estimated_read_tokens、estimated_write_tokens、last_prefix_hash、last_hint_present，并通过 API 与 WebUI 的 `by_surface` 区分 Chat Completions、Responses、Claude Messages 等入口；本地估算不会写入 `usage.prompt_tokens_details.cached_tokens`。如果 DeepSeek 上游流里真实返回 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，则只透传这些真实字段，并把 hit tokens 映射到 OpenAI 兼容的 cached tokens 位置；Claude direct 会把 hit tokens 映射到 `cache_read_input_tokens`，但不会把 miss tokens 伪装成 `cache_creation_input_tokens`。
+prefix 边界固定为 tools/system/developer/历史消息以及最后一条消息之前的内容；最后一条消息视为 tail。请求体 `prompt_cache_key`、请求头 `X-DeepSeek-Web-To-API-Prompt-Cache-Key`，以及 Claude Messages 的顶层或块级 `cache_control` 会作为 hint 参与 tracker 分组，但不会转发给 DeepSeek，也不会加入完整响应缓存 key。Claude hint 只记录缓存控制类型、TTL 和 breakpoint 数量，不记录 prompt 原文。管理台总览的 `prompt_cache` 字段展示 observed、eligible、reused、reuse_rate、estimated_read_tokens、estimated_write_tokens、actual_hit_tokens、actual_miss_tokens、actual_hit_rate、last_prefix_hash、last_hint_present，并通过 API 与 WebUI 的 `by_surface` 区分 Chat Completions、Responses、Claude Messages 等入口；`ineligible_reasons` 会解释为什么没有稳定 prefix，`miss_reasons` 会解释 eligible 请求为什么没有复用，例如 cold_start、ttl_expired、evicted、model_changed、thinking_changed、search_changed、hint_changed、prefix_changed。本地估算不会写入 `usage.prompt_tokens_details.cached_tokens`。如果 DeepSeek 上游流里真实返回 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，则只透传这些真实字段，并把 hit tokens 映射到 OpenAI 兼容的 cached tokens 位置；Claude direct 会把 hit tokens 映射到 `cache_read_input_tokens`，但不会把 miss tokens 伪装成 `cache_creation_input_tokens`。
 
 **章节来源**
 - [internal/chathistory/sqlite_store.go](file://internal/chathistory/sqlite_store.go)

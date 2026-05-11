@@ -16,6 +16,7 @@ import (
 	openaishared "DeepSeek_Web_To_API/internal/httpapi/openai/shared"
 	"DeepSeek_Web_To_API/internal/prompt"
 	"DeepSeek_Web_To_API/internal/promptcompat"
+	"DeepSeek_Web_To_API/internal/sessioncache"
 	"DeepSeek_Web_To_API/internal/sse"
 	"DeepSeek_Web_To_API/internal/toolcall"
 	"DeepSeek_Web_To_API/internal/util"
@@ -75,33 +76,30 @@ func (h *Handler) handleDirectClaudeIfAvailable(w http.ResponseWriter, r *http.R
 	if historySession == nil {
 		historySession = historycapture.Start(h.ChatHistory, r, a, norm.Standard)
 	}
-	sessionID, err := h.DS.CreateSession(r.Context(), a, 3)
-	if err != nil {
+	handleCreateSessionErr := func(err error) {
 		sessionDetail := openaishared.SessionErrorDetail(err)
 		if sessionDetail.Stopped || sessionDetail.Status == http.StatusGatewayTimeout {
 			writeClaudeSessionCallError(w, historySession, err)
-			return true
+			return
 		}
 		if a.UseConfigToken {
 			if historySession != nil {
 				historySession.Error(http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.", "error", "", "")
 			}
 			writeClaudeError(w, http.StatusUnauthorized, "Account token is invalid. Please re-login the account in admin.")
-			return true
+			return
 		}
 		if historySession != nil {
 			historySession.Error(http.StatusUnauthorized, "Invalid token. If this should be a DeepSeek_Web_To_API key, add it to config.keys first.", "error", "", "")
 		}
 		a.MarkDirectTokenInvalid()
 		writeClaudeError(w, http.StatusUnauthorized, "Invalid token. If this should be a DeepSeek_Web_To_API key, add it to config.keys first.")
-		return true
 	}
-	pow, err := h.DS.GetPow(r.Context(), a, 3)
-	if err != nil {
+	handlePowErr := func(err error) {
 		powDetail := openaishared.PowErrorDetail(err)
 		if powDetail.Stopped || powDetail.Status == http.StatusGatewayTimeout {
 			writeClaudePowCallError(w, historySession, err)
-			return true
+			return
 		}
 		if historySession != nil {
 			historySession.Error(http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).", "error", "", "")
@@ -110,10 +108,36 @@ func (h *Handler) handleDirectClaudeIfAvailable(w http.ResponseWriter, r *http.R
 			a.MarkDirectTokenInvalid()
 		}
 		writeClaudeError(w, http.StatusUnauthorized, "Failed to get PoW (invalid token or unknown error).")
+	}
+	sessionResolution, err := h.resolveClaudeDeepSeekSession(r.Context(), a, norm.Standard)
+	sessionID := sessionResolution.ID
+	if err != nil {
+		handleCreateSessionErr(err)
+		return true
+	}
+	pow, err := h.DS.GetPow(r.Context(), a, 3)
+	if err != nil {
+		handlePowErr(err)
 		return true
 	}
 	payload := norm.Standard.CompletionPayload(sessionID)
 	resp, err := h.DS.CallCompletion(r.Context(), a, payload, pow, 3)
+	if err != nil && h.SessionCache != nil && sessionResolution.Key != "" && sessioncache.InvalidatesCompletionError(err) {
+		h.SessionCache.RecordInvalidSession(sessionResolution.Key)
+		config.Logger.Info("[session_cache] invalid session; retrying with fresh session", "surface", "anthropic.messages", "account", strings.TrimSpace(a.AccountID), "session_key", shortClaudeLogValue(a.SessionKey), "from_cache", sessionResolution.FromCache)
+		sessionID, err = h.DS.CreateSession(r.Context(), a, 3)
+		if err != nil {
+			handleCreateSessionErr(err)
+			return true
+		}
+		pow, err = h.DS.GetPow(r.Context(), a, 3)
+		if err != nil {
+			handlePowErr(err)
+			return true
+		}
+		payload = norm.Standard.CompletionPayload(sessionID)
+		resp, err = h.DS.CallCompletion(r.Context(), a, payload, pow, 3)
+	}
 	if err != nil {
 		config.Logger.Warn("[claude] completion request failed", "stream", norm.Standard.Stream, "error", err)
 		if !a.UseConfigToken && openaishared.CompletionErrorDetail(err).Status == http.StatusUnauthorized {
@@ -122,6 +146,7 @@ func (h *Handler) handleDirectClaudeIfAvailable(w http.ResponseWriter, r *http.R
 		writeClaudeCompletionCallError(w, historySession, err, "", "")
 		return true
 	}
+	openaishared.StoreDeepSeekSession(h.SessionCache, a, norm.Standard, "anthropic.messages", sessionID, sessionResolution.Key)
 	if norm.Standard.Stream {
 		h.handleClaudeStreamRealtime(
 			w,
@@ -194,6 +219,7 @@ func applyClaudeDirectThinkingPolicy(norm *claudeNormalizedRequest, original map
 	norm.Standard.PromptPrefixTokens = prefixInfo.PrefixTokens
 	norm.Standard.PromptTailTokens = prefixInfo.TailTokens
 	norm.Standard.PromptPrefixEligible = prefixInfo.Eligible
+	norm.Standard.PromptPrefixReason = prefixInfo.Reason
 	return norm.Standard.ExposeReasoning
 }
 
@@ -211,6 +237,7 @@ func (h *Handler) handleDirectClaudeNonStream(w http.ResponseWriter, resp *http.
 	}
 
 	result := sse.CollectStream(resp, norm.Standard.Thinking, true)
+	h.recordClaudePromptCacheUsage(result.PromptCacheUsage)
 	stripReferenceMarkers := h.compatStripReferenceMarkers()
 	finalThinking := cleanVisibleOutput(result.Thinking, stripReferenceMarkers)
 	finalText := cleanVisibleOutput(result.Text, stripReferenceMarkers)
@@ -261,6 +288,21 @@ func firstHistorySession(historySessions []*historycapture.Session) *historycapt
 		return nil
 	}
 	return historySessions[0]
+}
+
+func shortClaudeLogValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 12 {
+		return value
+	}
+	return value[:12] + "..."
+}
+
+func (h *Handler) recordClaudePromptCacheUsage(usage sse.PromptCacheUsage) {
+	if h == nil || h.PromptCache == nil {
+		return
+	}
+	h.PromptCache.RecordActualUsage("anthropic.messages", usage.HitTokens, usage.MissTokens, usage.HasHit, usage.HasMiss)
 }
 
 func shouldWriteClaudeEmptyOutputError(finalText, finalThinking string, contentFilter bool, toolNames []string) bool {

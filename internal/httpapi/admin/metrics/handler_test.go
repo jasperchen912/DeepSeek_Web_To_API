@@ -91,13 +91,17 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 			"compression":                "gzip",
 		}},
 		SessionCache: sessionCacheStatsStub{stats: sessioncache.Stats{
-			Hits:               4,
-			Misses:             2,
-			Stores:             3,
-			InflightWaits:      1,
-			Invalidations:      1,
-			Entries:            2,
-			DisabledAutoDelete: 1,
+			Hits:                    4,
+			Misses:                  2,
+			Stores:                  3,
+			InflightWaits:           1,
+			Invalidations:           1,
+			Entries:                 2,
+			DisabledAutoDelete:      1,
+			InvalidSessionErrors:    2,
+			InvalidSessionCooldowns: 1,
+			CooldownBypasses:        3,
+			CooldownEntries:         1,
 		}},
 		PromptCache: promptCacheStatsStub{stats: promptcache.Stats{
 			Observed:             5,
@@ -106,16 +110,28 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 			ReuseRate:            50,
 			EstimatedReadTokens:  300,
 			EstimatedWriteTokens: 500,
+			ActualSamples:        2,
+			ActualHitTokens:      120,
+			ActualMissTokens:     80,
+			ActualHitRate:        60,
 			Entries:              3,
 			LastPrefixHash:       "hash-a",
 			LastHintPresent:      true,
+			IneligibleReasons:    map[string]int64{"no_stable_prefix": 1},
+			MissReasons:          map[string]int64{"cold_start": 1, "model_changed": 1},
 			BySurface: map[string]promptcache.SurfaceStats{
 				"anthropic.messages": {
-					Observed:        2,
-					Eligible:        2,
-					Reused:          1,
-					ReuseRate:       50,
-					LastHintPresent: true,
+					Observed:          2,
+					Eligible:          2,
+					Reused:            1,
+					ReuseRate:         50,
+					ActualSamples:     1,
+					ActualHitTokens:   90,
+					ActualMissTokens:  10,
+					ActualHitRate:     90,
+					LastHintPresent:   true,
+					IneligibleReasons: map[string]int64{"no_stable_prefix": 1},
+					MissReasons:       map[string]int64{"cold_start": 1},
 				},
 			},
 		}},
@@ -170,14 +186,20 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 	if body.Cache.UncacheableReasons["stream_request"] != 2 || body.Cache.UncacheableReasons["missing_owner"] != 1 || body.Cache.UncacheableReasons["status_non_2xx"] != 1 {
 		t.Fatalf("unexpected uncacheable reason metrics: %#v", body.Cache.UncacheableReasons)
 	}
-	if body.SessionCache.Hits != 4 || body.SessionCache.InflightWaits != 1 || body.SessionCache.DisabledAutoDelete != 1 {
+	if body.SessionCache.Hits != 4 || body.SessionCache.InflightWaits != 1 || body.SessionCache.DisabledAutoDelete != 1 || body.SessionCache.InvalidSessionErrors != 2 || body.SessionCache.InvalidSessionCooldowns != 1 || body.SessionCache.CooldownBypasses != 3 || body.SessionCache.CooldownEntries != 1 {
 		t.Fatalf("unexpected session cache metrics: %#v", body.SessionCache)
 	}
-	if body.PromptCache.Observed != 5 || body.PromptCache.Eligible != 4 || body.PromptCache.Reused != 2 || body.PromptCache.ReuseRate != 50 || body.PromptCache.EstimatedReadTokens != 300 || !body.PromptCache.LastHintPresent {
+	if body.PromptCache.Observed != 5 || body.PromptCache.Eligible != 4 || body.PromptCache.Reused != 2 || body.PromptCache.ReuseRate != 50 || body.PromptCache.EstimatedReadTokens != 300 || body.PromptCache.ActualHitTokens != 120 || body.PromptCache.ActualHitRate != 60 || !body.PromptCache.LastHintPresent {
 		t.Fatalf("unexpected prompt cache metrics: %#v", body.PromptCache)
 	}
-	if body.PromptCache.BySurface["anthropic.messages"].ReuseRate != 50 || !body.PromptCache.BySurface["anthropic.messages"].LastHintPresent {
+	if body.PromptCache.IneligibleReasons["no_stable_prefix"] != 1 || body.PromptCache.MissReasons["model_changed"] != 1 {
+		t.Fatalf("unexpected prompt cache reason metrics: %#v %#v", body.PromptCache.IneligibleReasons, body.PromptCache.MissReasons)
+	}
+	if body.PromptCache.BySurface["anthropic.messages"].ReuseRate != 50 || body.PromptCache.BySurface["anthropic.messages"].ActualHitRate != 90 || !body.PromptCache.BySurface["anthropic.messages"].LastHintPresent {
 		t.Fatalf("unexpected prompt cache surface metrics: %#v", body.PromptCache.BySurface)
+	}
+	if body.PromptCache.BySurface["anthropic.messages"].IneligibleReasons["no_stable_prefix"] != 1 || body.PromptCache.BySurface["anthropic.messages"].MissReasons["cold_start"] != 1 {
+		t.Fatalf("unexpected prompt cache surface reason metrics: %#v", body.PromptCache.BySurface["anthropic.messages"])
 	}
 	if body.CurrentInputPrefix.Applied != 2 || body.CurrentInputPrefix.Reused != 1 || body.CurrentInputPrefix.Refreshes != 1 || body.CurrentInputPrefix.ReuseRate != 50 || body.CurrentInputPrefix.CurrentInputFileMsReusedAvg != 120 || body.CurrentInputPrefix.CurrentInputFileMsRefreshAvg != 2000 {
 		t.Fatalf("unexpected current input prefix metrics: %#v", body.CurrentInputPrefix)

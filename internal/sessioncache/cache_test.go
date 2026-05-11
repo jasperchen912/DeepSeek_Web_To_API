@@ -139,6 +139,49 @@ func TestInvalidateSessionIDRemovesMatchingEntries(t *testing.T) {
 	}
 }
 
+func TestRecordInvalidSessionStartsCooldownAfterRepeatedErrors(t *testing.T) {
+	cache := New(Options{TTL: time.Hour, MaxEntries: 10, InvalidCooldown: time.Minute})
+	now := time.Unix(1000, 0)
+	cache.now = func() time.Time { return now }
+	key := "key"
+	cache.Store(key, Value{SessionID: "session-a", Actor: "account:a"})
+
+	cache.RecordInvalidSession(key)
+	cache.Store(key, Value{SessionID: "session-b", Actor: "account:a"})
+	cache.RecordInvalidSession(key)
+
+	calls := 0
+	create := func(ctx context.Context) (Value, error) {
+		_ = ctx
+		calls++
+		return Value{SessionID: "fresh", Actor: "account:a"}, nil
+	}
+	value, result, err := cache.GetOrCreate(context.Background(), key, create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hit || value.SessionID != "fresh" || calls != 1 {
+		t.Fatalf("expected cooldown bypass create, result=%#v value=%#v calls=%d", result, value, calls)
+	}
+	cache.Store(key, Value{SessionID: "should-not-store", Actor: "account:a"})
+	stats := cache.Stats()
+	if stats.InvalidSessionErrors != 2 || stats.InvalidSessionCooldowns != 1 || stats.CooldownBypasses != 1 || stats.CooldownEntries != 1 || stats.Entries != 0 {
+		t.Fatalf("unexpected cooldown stats: %#v", stats)
+	}
+
+	now = now.Add(time.Minute + time.Second)
+	value, result, err = cache.GetOrCreate(context.Background(), key, create)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Hit || value.SessionID != "fresh" || calls != 2 {
+		t.Fatalf("expected post-cooldown create, result=%#v value=%#v calls=%d", result, value, calls)
+	}
+	if stats := cache.Stats(); stats.CooldownEntries != 0 || stats.Entries != 1 {
+		t.Fatalf("expected cooldown to expire and cache to store again, got %#v", stats)
+	}
+}
+
 func TestInvalidatesCompletionErrorOnlyForSessionFailures(t *testing.T) {
 	sessionErr := &dsclient.RequestFailure{
 		Kind:       dsclient.FailureUpstreamStatus,

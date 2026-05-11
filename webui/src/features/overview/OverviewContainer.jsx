@@ -104,10 +104,38 @@ const UNCACHEABLE_REASON_LABELS = {
     store_failed: '写入失败',
 }
 
+const PROMPT_REASON_LABELS = {
+    no_stable_prefix: '无稳定前缀',
+    missing_prefix_hash: '缺少 Prefix Hash',
+    missing_isolation_key: '缺少隔离键',
+    cold_start: '首次观测',
+    ttl_expired: 'TTL 过期',
+    evicted: '容量淘汰',
+    model_changed: '模型变化',
+    thinking_changed: 'Thinking 变化',
+    search_changed: 'Search 变化',
+    hint_changed: 'Hint 变化',
+    prefix_changed: 'Prefix 变化',
+}
+
 function reasonLabel(reason) {
     const key = String(reason || '').trim()
     if (!key) return '未知原因'
     return UNCACHEABLE_REASON_LABELS[key] || key.replaceAll('_', ' ')
+}
+
+function promptReasonLabel(reason) {
+    const key = String(reason || '').trim()
+    if (!key) return '未知原因'
+    return PROMPT_REASON_LABELS[key] || key.replaceAll('_', ' ')
+}
+
+function reasonRows(map, labeler) {
+    const raw = map && typeof map === 'object' ? map : {}
+    return Object.entries(raw)
+        .map(([reason, count]) => ({ reason, label: labeler(reason), count: Number(count) || 0 }))
+        .filter(item => item.reason && item.count > 0)
+        .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
 }
 
 function responseCacheUncacheableReasons(cache) {
@@ -153,9 +181,13 @@ function promptCacheSurfaceRows(promptCache) {
             reuseRate: Number(item?.reuse_rate) || 0,
             readTokens: Number(item?.estimated_read_tokens) || 0,
             writeTokens: Number(item?.estimated_write_tokens) || 0,
+            actualSamples: Number(item?.actual_samples) || 0,
+            actualHitTokens: Number(item?.actual_hit_tokens) || 0,
+            actualMissTokens: Number(item?.actual_miss_tokens) || 0,
+            actualHitRate: Number(item?.actual_hit_rate) || 0,
             hintPresent: Boolean(item?.last_hint_present),
         }))
-        .filter(item => item.observed > 0)
+        .filter(item => item.observed > 0 || item.actualSamples > 0)
         .sort((a, b) => b.observed - a.observed || a.label.localeCompare(b.label))
 }
 
@@ -408,6 +440,11 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
     const cacheSingleflightHits = Number(cache.singleflight_hits) || 0
     const cacheInflightWaits = Number(cache.inflight_waits) || 0
     const uncacheableReasonRows = responseCacheUncacheableReasons(cache).slice(0, 4)
+    const sessionCache = metrics.session_cache || {}
+    const sessionCooldownBypasses = Number(sessionCache.cooldown_bypasses) || 0
+    const sessionCooldownEntries = Number(sessionCache.cooldown_entries) || 0
+    const sessionInvalidErrors = Number(sessionCache.invalid_session_errors) || 0
+    const sessionInvalidCooldowns = Number(sessionCache.invalid_session_cooldowns) || 0
     const promptCache = metrics.prompt_cache || {}
     const promptObserved = Number(promptCache.observed) || 0
     const promptEligible = Number(promptCache.eligible) || 0
@@ -415,10 +452,16 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
     const promptReuseRate = Number(promptCache.reuse_rate) || 0
     const promptReadTokens = Number(promptCache.estimated_read_tokens) || 0
     const promptWriteTokens = Number(promptCache.estimated_write_tokens) || 0
+    const promptActualSamples = Number(promptCache.actual_samples) || 0
+    const promptActualHitTokens = Number(promptCache.actual_hit_tokens) || 0
+    const promptActualMissTokens = Number(promptCache.actual_miss_tokens) || 0
+    const promptActualHitRate = Number(promptCache.actual_hit_rate) || 0
     const promptEntries = Number(promptCache.entries) || 0
     const promptLastPrefixHash = shortHash(promptCache.last_prefix_hash)
     const promptLastHintPresent = Boolean(promptCache.last_hint_present)
     const promptSurfaceRows = promptCacheSurfaceRows(promptCache).slice(0, 4)
+    const promptMissReasonRows = reasonRows(promptCache.miss_reasons, promptReasonLabel).slice(0, 4)
+    const promptIneligibleReasonRows = reasonRows(promptCache.ineligible_reasons, promptReasonLabel).slice(0, 4)
     const currentInputPrefix = metrics.current_input_prefix || {}
     const prefixApplied = Number(currentInputPrefix.applied) || 0
     const prefixReused = Number(currentInputPrefix.reused) || 0
@@ -492,9 +535,9 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
                 <MetricCard icon={Sparkles} label="Prompt Cache 复用" value={formatPercent(promptReuseRate)} hint={`${formatNumber(promptReused)} / ${formatNumber(promptEligible)} eligible · ${formatNumber(promptObserved)} observed`} tone="emerald" />
-                <MetricCard icon={Database} label="Prefix 读估算" value={formatNumber(promptReadTokens)} hint={`write ${formatNumber(promptWriteTokens)} estimated tokens`} tone="cyan" />
+                <MetricCard icon={Database} label="上游真实命中" value={formatPercent(promptActualHitRate)} hint={`${formatNumber(promptActualHitTokens)} hit / ${formatNumber(promptActualMissTokens)} miss · ${formatNumber(promptActualSamples)} samples`} tone="cyan" />
                 <MetricCard icon={Server} label="Tracker Entries" value={formatNumber(promptEntries)} hint={promptLastHintPresent ? '最近请求带 cache hint' : '最近请求无 cache hint'} tone="amber" />
-                <MetricCard icon={History} label="最新 Prefix" value={promptLastPrefixHash} hint={`${formatNumber(promptSurfaceRows.length)} 个 surface 有观测`} />
+                <MetricCard icon={History} label="Prefix 读估算" value={formatNumber(promptReadTokens)} hint={`write ${formatNumber(promptWriteTokens)} est · latest ${promptLastPrefixHash}`} />
             </div>
 
             {promptSurfaceRows.length > 0 && (
@@ -523,11 +566,37 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
                                     <div>{formatNumber(item.reused)} reused</div>
                                     <div>{formatNumber(item.eligible)} eligible</div>
                                     <div>{formatNumber(item.readTokens)} read est</div>
-                                    <div>{item.hintPresent ? 'hint yes' : 'hint no'}</div>
+                                    <div>{formatPercent(item.actualHitRate)} actual</div>
                                 </div>
                             </div>
                         ))}
                     </div>
+                    {(promptMissReasonRows.length > 0 || promptIneligibleReasonRows.length > 0) && (
+                        <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="rounded-lg border border-slate-200 bg-white/80 px-3 py-3 min-w-0">
+                                <div className="text-xs font-black text-slate-950">Miss 原因</div>
+                                <div className="mt-2 space-y-1">
+                                    {promptMissReasonRows.map(item => (
+                                        <div key={item.reason} className="flex items-center justify-between gap-2 text-[11px] font-bold text-muted-foreground">
+                                            <span className="min-w-0 truncate">{item.label}</span>
+                                            <strong className="shrink-0 text-slate-900">{formatNumber(item.count)}</strong>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="rounded-lg border border-slate-200 bg-white/80 px-3 py-3 min-w-0">
+                                <div className="text-xs font-black text-slate-950">不可复用原因</div>
+                                <div className="mt-2 space-y-1">
+                                    {promptIneligibleReasonRows.map(item => (
+                                        <div key={item.reason} className="flex items-center justify-between gap-2 text-[11px] font-bold text-muted-foreground">
+                                            <span className="min-w-0 truncate">{item.label}</span>
+                                            <strong className="shrink-0 text-slate-900">{formatNumber(item.count)}</strong>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -655,6 +724,23 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
                                     <div className="mt-1 truncate text-[10px] font-bold text-amber-700/80">{item.reason}</div>
                                 </div>
                             ))}
+                        </div>
+                    )}
+                    {(sessionInvalidErrors > 0 || sessionCooldownBypasses > 0 || sessionCooldownEntries > 0) && (
+                        <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div className="rounded-lg border border-cyan-100 bg-cyan-50/70 px-3 py-2 min-w-0">
+                                <span className="block text-[11px] font-black text-cyan-800">Session 失效</span>
+                                <strong className="mt-1 block text-xs font-black text-cyan-950">{formatNumber(sessionInvalidErrors)}</strong>
+                            </div>
+                            <div className="rounded-lg border border-cyan-100 bg-cyan-50/70 px-3 py-2 min-w-0">
+                                <span className="block text-[11px] font-black text-cyan-800">Cooldown 触发</span>
+                                <strong className="mt-1 block text-xs font-black text-cyan-950">{formatNumber(sessionInvalidCooldowns)}</strong>
+                            </div>
+                            <div className="rounded-lg border border-cyan-100 bg-cyan-50/70 px-3 py-2 min-w-0">
+                                <span className="block text-[11px] font-black text-cyan-800">Cooldown 绕过</span>
+                                <strong className="mt-1 block text-xs font-black text-cyan-950">{formatNumber(sessionCooldownBypasses)}</strong>
+                                <em className="mt-1 block truncate text-[10px] font-bold text-cyan-700/80">{formatNumber(sessionCooldownEntries)} active</em>
+                            </div>
                         </div>
                     )}
                 </div>

@@ -17,6 +17,7 @@ import (
 	"DeepSeek_Web_To_API/internal/httpapi/openai/history"
 	"DeepSeek_Web_To_API/internal/httpapi/openai/responses"
 	"DeepSeek_Web_To_API/internal/httpapi/openai/shared"
+	"DeepSeek_Web_To_API/internal/promptcache"
 	"DeepSeek_Web_To_API/internal/promptcompat"
 )
 
@@ -25,6 +26,7 @@ type openAITestSurface struct {
 	Auth        shared.AuthResolver
 	DS          shared.DeepSeekCaller
 	ChatHistory *chathistory.Store
+	PromptCache *promptcache.Cache
 
 	chat       *chat.Handler
 	responses  *responses.Handler
@@ -43,7 +45,7 @@ func (h *openAITestSurface) deps() shared.Deps {
 func (h *openAITestSurface) chatHandler() *chat.Handler {
 	if h.chat == nil {
 		deps := h.deps()
-		h.chat = &chat.Handler{Store: deps.Store, Auth: deps.Auth, DS: deps.DS, ChatHistory: deps.ChatHistory}
+		h.chat = &chat.Handler{Store: deps.Store, Auth: deps.Auth, DS: deps.DS, ChatHistory: deps.ChatHistory, PromptCache: h.PromptCache}
 	}
 	return h.chat
 }
@@ -51,7 +53,7 @@ func (h *openAITestSurface) chatHandler() *chat.Handler {
 func (h *openAITestSurface) responsesHandler() *responses.Handler {
 	if h.responses == nil {
 		deps := h.deps()
-		h.responses = &responses.Handler{Store: deps.Store, Auth: deps.Auth, DS: deps.DS, ChatHistory: deps.ChatHistory}
+		h.responses = &responses.Handler{Store: deps.Store, Auth: deps.Auth, DS: deps.DS, ChatHistory: deps.ChatHistory, PromptCache: h.PromptCache}
 	}
 	return h.responses
 }

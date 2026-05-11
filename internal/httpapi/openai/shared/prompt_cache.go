@@ -31,12 +31,17 @@ func ObservePromptCache(cache PromptCacheObserver, r *http.Request, a *auth.Requ
 		TailTokens:   stdReq.PromptTailTokens,
 		Eligible:     stdReq.PromptPrefixEligible,
 		Hint:         stdReq.PromptCacheHint,
+		Reason:       stdReq.PromptPrefixReason,
 	})
 	stdReq.PromptPrefixHash = result.PrefixHash
 	stdReq.PromptPrefixTokens = result.PrefixTokens
 	stdReq.PromptTailTokens = result.TailTokens
 	stdReq.PromptPrefixEligible = result.Eligible
 	stdReq.PromptPrefixReused = result.Reused
+	stdReq.PromptPrefixReason = result.IneligibleReason
+	if stdReq.PromptPrefixReason == "" {
+		stdReq.PromptPrefixReason = result.MissReason
+	}
 	return stdReq
 }
 

@@ -133,7 +133,7 @@ Tool-call 输出按 `Detect -> Normalize -> Repair -> Parse` 处理：先确认�
 
 Claude Messages 的 `system`、`messages`、`tools` 和 `tool_result` 需要转换成同一套标准消息。Claude Code 这类客户端依赖稳定流式输出和工具结果不断会话，因此工具历史必须被转写进 prompt-visible 上下文。
 
-Claude Messages direct path 也会进入 prompt prefix cache 诊断。顶层或协议块级 `cache_control` 会被折叠成不含原文的 hint（只包含自动缓存、breakpoint 数量、类型和 TTL），参与本地 tracker 分组；工具 JSON schema 里的普通同名字段不会被当作缓存断点。`cache_control` 本身仍会从最终 prompt 中剥离，也不会转发给 DeepSeek。由于 DeepSeek Web 没有 Claude 的显式 breakpoint API，这里的作用是解释 prefix 稳定性和上游真实 context cache 命中，而不是实现 Claude 原生缓存写入语义。若 DeepSeek 上游真实返回 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，Claude direct 响应会保留这些诊断字段，并仅把 hit tokens 映射为 Claude 的 `cache_read_input_tokens`；miss tokens 不会被伪装成 Claude `cache_creation_input_tokens`。
+Claude Messages direct path 也会进入 prompt prefix cache 诊断并复用 DeepSeek `chat_session_id`。顶层或协议块级 `cache_control` 会被折叠成不含原文的 hint（只包含自动缓存、breakpoint 数量、类型和 TTL），参与本地 tracker 分组；工具 JSON schema 里的普通同名字段不会被当作缓存断点。`cache_control` 本身仍会从最终 prompt 中剥离，也不会转发给 DeepSeek。由于 DeepSeek Web 没有 Claude 的显式 breakpoint API，这里的作用是解释 prefix 稳定性和上游真实 context cache 命中，而不是实现 Claude 原生缓存写入语义。若 DeepSeek 上游真实返回 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，Claude direct 响应会保留这些诊断字段，并仅把 hit tokens 映射为 Claude 的 `cache_read_input_tokens`；miss tokens 不会被伪装成 Claude `cache_creation_input_tokens`。这些真实 hit/miss token 会进入 `prompt_cache.actual_*` 管理台指标，用来和本地 prefix tracker 的估算复用率区分；`prompt_cache.ineligible_reasons` 和 `prompt_cache.miss_reasons` 用于解释无稳定 prefix、TTL 过期、容量淘汰、模型/thinking/search/hint/prefix 改变等命中率问题。
 
 ### Gemini Contents
 

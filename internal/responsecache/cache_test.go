@@ -521,6 +521,44 @@ func TestRequestKeyCanonicalizesJSONBodyAndIgnoredMetadata(t *testing.T) {
 	}
 }
 
+func TestMiddlewareCachesCanonicalJSONAcrossFieldOrder(t *testing.T) {
+	t.Parallel()
+
+	cache := New(Options{Dir: t.TempDir(), MemoryTTL: time.Minute, DiskTTL: time.Hour})
+	var calls int32
+	handler := cache.Wrap(stubResolver{caller: "caller-a"}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+
+	reqA := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"metadata":{"trace":"a"},"messages":[{"content":"hello","role":"user"}],"model":"m"}`))
+	reqA.Header.Set("Content-Type", "application/json; charset=utf-8")
+	recA := httptest.NewRecorder()
+	handler.ServeHTTP(recA, reqA)
+	if recA.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", recA.Code, recA.Body.String())
+	}
+
+	reqB := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"hello"}],
+		"metadata":{"trace":"b"}
+	}`))
+	reqB.Header.Set("Content-Type", "application/json")
+	recB := httptest.NewRecorder()
+	handler.ServeHTTP(recB, reqB)
+	if recB.Code != http.StatusOK {
+		t.Fatalf("second status=%d body=%s", recB.Code, recB.Body.String())
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected canonical JSON request to reuse cache, handler calls=%d", got)
+	}
+	if got := recB.Header().Get("X-DeepSeek-Web-To-API-Cache"); got != "memory" {
+		t.Fatalf("expected memory hit for canonical JSON request, got %q", got)
+	}
+}
+
 func TestRequestKeyIgnoresPromptCacheKeyHint(t *testing.T) {
 	t.Parallel()
 
