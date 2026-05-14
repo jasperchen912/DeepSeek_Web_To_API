@@ -238,6 +238,8 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"raw_body_bytes", len(rawBody),
 		"raw_body_hash", shortHashBytes(rawBody),
 		"current_input_file", stdReq.CurrentInputFileApplied,
+		"current_input_file_fallback", stdReq.CurrentInputFileFallback,
+		"current_input_file_fallback_reason", shortTimingValue(stdReq.CurrentInputFileFallbackReason),
 		"current_input_prefix_hash", stdReq.CurrentInputPrefixHash,
 		"current_input_prefix_reused", stdReq.CurrentInputPrefixReused,
 		"current_input_prefix_chars", stdReq.CurrentInputPrefixChars,
@@ -284,6 +286,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 func recordCurrentInputMetrics(stdReq promptcompat.StandardRequest, duration time.Duration) {
 	currentinputmetrics.Record(currentinputmetrics.Sample{
 		Applied:           stdReq.CurrentInputFileApplied,
+		UploadFallback:    stdReq.CurrentInputFileFallback,
 		PrefixReused:      stdReq.CurrentInputPrefixReused,
 		CheckpointRefresh: stdReq.CurrentInputCheckpointRefresh,
 		PrefixHash:        stdReq.CurrentInputPrefixHash,

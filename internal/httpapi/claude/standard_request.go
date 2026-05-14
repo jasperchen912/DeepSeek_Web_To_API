@@ -48,7 +48,7 @@ func normalizeClaudeRequest(store ConfigReader, req map[string]any) (claudeNorma
 	}
 	dsMessages, _ := dsPayload["messages"].([]any)
 	finalPrompt := prompt.MessagesPrepareWithThinking(toMessageMaps(dsMessages), thinkingEnabled)
-	prefixInfo := promptcompat.AnalyzeOpenAIPromptPrefix(dsMessages, nil, "", promptcompat.DefaultToolChoicePolicy(), thinkingEnabled, dsModel)
+	prefixInfo := analyzeClaudePromptPrefix(store, req, dsMessages, thinkingEnabled, dsModel)
 	toolNames := extractClaudeToolNames(toolsRequested)
 	if len(toolNames) == 0 && len(toolsRequested) > 0 {
 		toolNames = []string{"__any_tool__"}
@@ -119,6 +119,105 @@ func claudePromptCacheHint(req map[string]any) string {
 		}
 	}
 	return strings.Join(parts, ";")
+}
+
+func analyzeClaudePromptPrefix(store ConfigReader, req map[string]any, dsMessages []any, thinkingEnabled bool, dsModel string) promptcompat.PromptPrefixInfo {
+	defaultInfo := promptcompat.AnalyzeOpenAIPromptPrefix(dsMessages, nil, "", promptcompat.DefaultToolChoicePolicy(), thinkingEnabled, dsModel)
+	fullMessages := toMessageMaps(dsMessages)
+	if len(fullMessages) < 2 {
+		return defaultInfo
+	}
+	if idx := lastClaudeMessageCacheControlIndex(req["messages"]); idx >= 0 {
+		if prefixCount := claudeBoundaryMessageCount(store, req, idx+1); prefixCount > 0 && prefixCount <= len(fullMessages) {
+			if info := promptcompat.AnalyzePromptPrefixAt(fullMessages, prefixCount, thinkingEnabled, dsModel); info.Eligible {
+				return info
+			}
+		}
+	}
+	if claudeHasSystemOrToolCacheControl(req) {
+		if prefixCount := leadingSystemMessageCount(fullMessages); prefixCount > 0 {
+			if info := promptcompat.AnalyzePromptPrefixAt(fullMessages, prefixCount, thinkingEnabled, dsModel); info.Eligible {
+				return info
+			}
+		}
+	}
+	return defaultInfo
+}
+
+func claudeBoundaryMessageCount(store ConfigReader, req map[string]any, rawMessageCount int) int {
+	if req == nil || rawMessageCount <= 0 {
+		return 0
+	}
+	messagesRaw, _ := req["messages"].([]any)
+	if rawMessageCount > len(messagesRaw) {
+		return 0
+	}
+	payload := cloneMap(req)
+	if systemText := claudeSystemText(req["system"]); systemText != "" {
+		payload["system"] = systemText
+	} else {
+		delete(payload, "system")
+	}
+	normalized := normalizeClaudeMessages(messagesRaw[:rawMessageCount])
+	toolsRequested, _ := req["tools"].([]any)
+	payload["messages"] = injectClaudeToolPrompt(payload, normalized, toolsRequested)
+	dsPayload := convertClaudeToDeepSeek(payload, store)
+	dsMessages, _ := dsPayload["messages"].([]any)
+	return len(toMessageMaps(dsMessages))
+}
+
+func lastClaudeMessageCacheControlIndex(value any) int {
+	messages, ok := value.([]any)
+	if !ok {
+		return -1
+	}
+	last := -1
+	for i, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if claudeContentHasCacheControl(msg["content"]) {
+			last = i
+		}
+	}
+	return last
+}
+
+func claudeContentHasCacheControl(value any) bool {
+	switch content := value.(type) {
+	case []any:
+		for _, item := range content {
+			if block, ok := item.(map[string]any); ok && claudeCacheControlID(block["cache_control"]) != "" {
+				return true
+			}
+		}
+	case map[string]any:
+		return claudeCacheControlID(content["cache_control"]) != ""
+	}
+	return false
+}
+
+func claudeHasSystemOrToolCacheControl(req map[string]any) bool {
+	if req == nil {
+		return false
+	}
+	summary := claudeCacheControlSummary{controls: map[string]int{}}
+	observeClaudeSystemCacheControls(req["system"], &summary)
+	observeClaudeToolCacheControls(req["tools"], &summary)
+	return summary.blocks > 0
+}
+
+func leadingSystemMessageCount(messages []map[string]any) int {
+	count := 0
+	for _, msg := range messages {
+		role, _ := msg["role"].(string)
+		if !strings.EqualFold(strings.TrimSpace(role), "system") {
+			break
+		}
+		count++
+	}
+	return count
 }
 
 func observeClaudeToolCacheControls(value any, summary *claudeCacheControlSummary) {

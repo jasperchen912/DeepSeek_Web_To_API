@@ -43,6 +43,7 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 	t.Cleanup(currentinputmetrics.ResetForTest)
 	currentinputmetrics.Record(currentinputmetrics.Sample{Applied: true, PrefixReused: false, CheckpointRefresh: true, PrefixHash: "hash-a", PrefixChars: 1000, TailChars: 40, TailEntries: 1, DurationMs: 2000})
 	currentinputmetrics.Record(currentinputmetrics.Sample{Applied: true, PrefixReused: true, CheckpointRefresh: false, PrefixHash: "hash-a", PrefixChars: 1000, TailChars: 120, TailEntries: 3, DurationMs: 120})
+	currentinputmetrics.Record(currentinputmetrics.Sample{UploadFallback: true})
 	store := chathistory.New(filepath.Join(t.TempDir(), "chat_history.json"))
 	entry, err := store.Start(chathistory.StartParams{
 		Model:     "deepseek-v4-pro",
@@ -159,6 +160,7 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 			PricingSource string  `json:"pricing_source"`
 		} `json:"cost"`
 		Cache              overviewCacheStats           `json:"cache"`
+		CacheWindows       map[string]cacheWindowStats  `json:"cache_windows"`
 		SessionCache       sessioncache.Stats           `json:"session_cache"`
 		PromptCache        promptcache.Stats            `json:"prompt_cache"`
 		CurrentInputPrefix currentinputmetrics.Snapshot `json:"current_input_prefix"`
@@ -186,6 +188,9 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 	if body.Cache.UncacheableReasons["stream_request"] != 2 || body.Cache.UncacheableReasons["missing_owner"] != 1 || body.Cache.UncacheableReasons["status_non_2xx"] != 1 {
 		t.Fatalf("unexpected uncacheable reason metrics: %#v", body.Cache.UncacheableReasons)
 	}
+	if body.CacheWindows["1m"].Label != "1m" || body.CacheWindows["5m"].WindowSeconds != 300 || body.CacheWindows["15m"].WindowSeconds != 900 {
+		t.Fatalf("unexpected cache window metrics: %#v", body.CacheWindows)
+	}
 	if body.SessionCache.Hits != 4 || body.SessionCache.InflightWaits != 1 || body.SessionCache.DisabledAutoDelete != 1 || body.SessionCache.InvalidSessionErrors != 2 || body.SessionCache.InvalidSessionCooldowns != 1 || body.SessionCache.CooldownBypasses != 3 || body.SessionCache.CooldownEntries != 1 {
 		t.Fatalf("unexpected session cache metrics: %#v", body.SessionCache)
 	}
@@ -201,7 +206,7 @@ func TestGetOverviewMetricsReturnsUsageCostAndHost(t *testing.T) {
 	if body.PromptCache.BySurface["anthropic.messages"].IneligibleReasons["no_stable_prefix"] != 1 || body.PromptCache.BySurface["anthropic.messages"].MissReasons["cold_start"] != 1 {
 		t.Fatalf("unexpected prompt cache surface reason metrics: %#v", body.PromptCache.BySurface["anthropic.messages"])
 	}
-	if body.CurrentInputPrefix.Applied != 2 || body.CurrentInputPrefix.Reused != 1 || body.CurrentInputPrefix.Refreshes != 1 || body.CurrentInputPrefix.ReuseRate != 50 || body.CurrentInputPrefix.CurrentInputFileMsReusedAvg != 120 || body.CurrentInputPrefix.CurrentInputFileMsRefreshAvg != 2000 {
+	if body.CurrentInputPrefix.Applied != 2 || body.CurrentInputPrefix.UploadFallbacks != 1 || body.CurrentInputPrefix.Reused != 1 || body.CurrentInputPrefix.Refreshes != 1 || body.CurrentInputPrefix.ReuseRate != 50 || body.CurrentInputPrefix.CurrentInputFileMsReusedAvg != 120 || body.CurrentInputPrefix.CurrentInputFileMsRefreshAvg != 2000 {
 		t.Fatalf("unexpected current input prefix metrics: %#v", body.CurrentInputPrefix)
 	}
 	if body.History.Total != 1 || body.History.Limit != chathistory.DefaultLimit || body.History.Success != 1 || body.History.SuccessRate != 100 {

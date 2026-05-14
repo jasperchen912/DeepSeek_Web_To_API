@@ -2,8 +2,6 @@ package history
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -275,9 +273,9 @@ func currentInputPrefixKey(a *auth.RequestAuth, stdReq promptcompat.StandardRequ
 }
 
 func currentInputTextHash(text string) string {
-	if text == "" {
+	hash := promptcompat.HashPromptText(text)
+	if hash == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(sum[:])[:16]
+	return hash[:16]
 }

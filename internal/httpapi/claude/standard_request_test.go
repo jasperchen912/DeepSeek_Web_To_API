@@ -240,3 +240,82 @@ func TestNormalizeClaudeRequestRecordsTopLevelCacheControlHint(t *testing.T) {
 		t.Fatalf("expected prefix diagnostics, got eligible=%v hash=%q tail=%d", norm.Standard.PromptPrefixEligible, norm.Standard.PromptPrefixHash, norm.Standard.PromptTailTokens)
 	}
 }
+
+func TestNormalizeClaudeRequestUsesSystemBreakpointForPrefixDiagnostics(t *testing.T) {
+	t.Setenv("DEEPSEEK_WEB_TO_API_CONFIG_JSON", `{}`)
+	store := config.LoadStore()
+	base := map[string]any{
+		"model": "claude-sonnet-4-6",
+		"system": []any{map[string]any{
+			"type":          "text",
+			"text":          "stable system",
+			"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
+		}},
+	}
+	reqA := cloneMap(base)
+	reqA["messages"] = []any{
+		map[string]any{"role": "user", "content": "volatile history a"},
+		map[string]any{"role": "assistant", "content": "ok"},
+		map[string]any{"role": "user", "content": "answer now"},
+	}
+	reqB := cloneMap(base)
+	reqB["messages"] = []any{
+		map[string]any{"role": "user", "content": "volatile history b"},
+		map[string]any{"role": "assistant", "content": "ok"},
+		map[string]any{"role": "user", "content": "answer now"},
+	}
+
+	normA, err := normalizeClaudeRequest(store, reqA)
+	if err != nil {
+		t.Fatalf("normalize A failed: %v", err)
+	}
+	normB, err := normalizeClaudeRequest(store, reqB)
+	if err != nil {
+		t.Fatalf("normalize B failed: %v", err)
+	}
+	if !normA.Standard.PromptPrefixEligible || normA.Standard.PromptPrefixHash == "" {
+		t.Fatalf("expected eligible system breakpoint prefix: %#v", normA.Standard)
+	}
+	if normA.Standard.PromptPrefixHash != normB.Standard.PromptPrefixHash {
+		t.Fatalf("expected system breakpoint to ignore volatile history, got %q vs %q", normA.Standard.PromptPrefixHash, normB.Standard.PromptPrefixHash)
+	}
+}
+
+func TestNormalizeClaudeRequestUsesMessageBreakpointForPrefixDiagnostics(t *testing.T) {
+	t.Setenv("DEEPSEEK_WEB_TO_API_CONFIG_JSON", `{}`)
+	store := config.LoadStore()
+	baseMessages := []any{
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "stable cached block", "cache_control": map[string]any{"type": "ephemeral"}},
+		}},
+	}
+	reqA := map[string]any{
+		"model": "claude-sonnet-4-6",
+		"messages": append(append([]any{}, baseMessages...),
+			map[string]any{"role": "assistant", "content": "volatile answer a"},
+			map[string]any{"role": "user", "content": "answer now"},
+		),
+	}
+	reqB := map[string]any{
+		"model": "claude-sonnet-4-6",
+		"messages": append(append([]any{}, baseMessages...),
+			map[string]any{"role": "assistant", "content": "volatile answer b"},
+			map[string]any{"role": "user", "content": "answer now"},
+		),
+	}
+
+	normA, err := normalizeClaudeRequest(store, reqA)
+	if err != nil {
+		t.Fatalf("normalize A failed: %v", err)
+	}
+	normB, err := normalizeClaudeRequest(store, reqB)
+	if err != nil {
+		t.Fatalf("normalize B failed: %v", err)
+	}
+	if !normA.Standard.PromptPrefixEligible || normA.Standard.PromptPrefixHash == "" {
+		t.Fatalf("expected eligible message breakpoint prefix: %#v", normA.Standard)
+	}
+	if normA.Standard.PromptPrefixHash != normB.Standard.PromptPrefixHash {
+		t.Fatalf("expected message breakpoint to ignore later volatile messages, got %q vs %q", normA.Standard.PromptPrefixHash, normB.Standard.PromptPrefixHash)
+	}
+}

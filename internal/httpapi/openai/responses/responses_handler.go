@@ -192,6 +192,9 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		"search", stdReq.Search,
 		"account", strings.TrimSpace(a.AccountID),
 		"caller", a.CallerID,
+		"current_input_file", stdReq.CurrentInputFileApplied,
+		"current_input_file_fallback", stdReq.CurrentInputFileFallback,
+		"current_input_file_fallback_reason", shortTimingValue(stdReq.CurrentInputFileFallbackReason),
 		"prompt_cache_hint", strings.TrimSpace(stdReq.PromptCacheHint),
 		"prompt_prefix_hash", stdReq.PromptPrefixHash,
 		"prompt_prefix_reused", stdReq.PromptPrefixReused,
@@ -210,6 +213,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 func recordCurrentInputMetrics(stdReq promptcompat.StandardRequest, duration time.Duration) {
 	currentinputmetrics.Record(currentinputmetrics.Sample{
 		Applied:           stdReq.CurrentInputFileApplied,
+		UploadFallback:    stdReq.CurrentInputFileFallback,
 		PrefixReused:      stdReq.CurrentInputPrefixReused,
 		CheckpointRefresh: stdReq.CurrentInputCheckpointRefresh,
 		PrefixHash:        stdReq.CurrentInputPrefixHash,
@@ -360,4 +364,12 @@ func filteredRejectedToolNamesForLog(names []string) []string {
 		}
 	}
 	return out
+}
+
+func shortTimingValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 96 {
+		return value
+	}
+	return value[:96]
 }

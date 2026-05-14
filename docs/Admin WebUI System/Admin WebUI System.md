@@ -126,7 +126,7 @@ WebUI-->>Browser: dashboard
 
 ### 总览指标
 
-总览页周期性请求 `/admin/queue/status`、`/admin/chat-history` 和 `/admin/metrics/overview`。成功率排除用户侧的 `401`、`403`、`502`、`504`、`524` 等状态，缓存命中率来自响应缓存统计。
+总览页周期性请求 `/admin/queue/status`、`/admin/chat-history` 和 `/admin/metrics/overview`。成功率排除用户侧的 `401`、`403`、`502`、`504`、`524` 等状态，缓存命中率来自响应缓存统计。缓存区域同时展示 `cache_windows` 的 1 分钟、5 分钟、15 分钟短窗口 delta，用于区分长期累计值和近期响应缓存、prompt cache、session cooldown 趋势；进程刚启动或第一次打开总览页时短窗口可能为 0，后续采样会逐步反映近期流量。`current_input_file` 默认关闭；启用后，Current Input 区域的 upload fallback 来自 `current_input_prefix.upload_fallbacks`，表示长上下文文件上传优化失败后已回退到 inline prompt 继续请求。
 
 ### 静态托管
 

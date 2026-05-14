@@ -48,10 +48,16 @@ func (s Service) ApplyCurrentInputFile(ctx context.Context, a *auth.RequestAuth,
 	if resolvedType, ok := config.GetModelType(stdReq.ResolvedModel); ok {
 		modelType = resolvedType
 	}
-	if out, ok, err := s.applyCurrentInputStablePrefix(ctx, a, stdReq, fileText, modelType); err != nil || ok {
+	if out, ok, err := s.applyCurrentInputStablePrefix(ctx, a, stdReq, fileText, modelType); err != nil {
+		return fallbackCurrentInputFileUpload(ctx, stdReq, err, "stable_prefix")
+	} else if ok {
 		return out, err
 	}
-	return s.applyCurrentInputFullFile(ctx, a, stdReq, fileText, modelType)
+	out, err := s.applyCurrentInputFullFile(ctx, a, stdReq, fileText, modelType)
+	if err != nil {
+		return fallbackCurrentInputFileUpload(ctx, stdReq, err, "full_file")
+	}
+	return out, nil
 }
 
 func (s Service) applyCurrentInputFullFile(ctx context.Context, a *auth.RequestAuth, stdReq promptcompat.StandardRequest, fileText, modelType string) (promptcompat.StandardRequest, error) {
@@ -103,6 +109,33 @@ func (s Service) uploadCurrentInputFile(ctx context.Context, a *auth.RequestAuth
 		return "", errors.New("upload current user input file returned empty file id")
 	}
 	return fileID, nil
+}
+
+func fallbackCurrentInputFileUpload(ctx context.Context, stdReq promptcompat.StandardRequest, err error, mode string) (promptcompat.StandardRequest, error) {
+	if shouldReturnCurrentInputFileUploadError(ctx, err) {
+		return stdReq, err
+	}
+	reason := strings.TrimSpace(err.Error())
+	if reason == "" {
+		reason = "upload failed"
+	}
+	config.Logger.Warn("[current_input_file] upload failed, falling back to inline prompt", "mode", mode, "error", reason, "surface", stdReq.Surface, "model", stdReq.ResolvedModel)
+	stdReq.CurrentInputFileFallback = true
+	stdReq.CurrentInputFileFallbackReason = reason
+	return stdReq, nil
+}
+
+func shouldReturnCurrentInputFileUploadError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if dsclient.IsManagedUnauthorizedError(err) || dsclient.IsDirectUnauthorizedError(err) || dsclient.IsClientCancelledError(err) {
+		return true
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	return false
 }
 
 func latestUserInputForFile(messages []any) (int, string) {

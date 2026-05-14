@@ -35,6 +35,7 @@ type overviewMetricsResponse struct {
 	Cost               costBreakdown                `json:"cost"`
 	Host               hostSnapshot                 `json:"host"`
 	Cache              overviewCacheStats           `json:"cache"`
+	CacheWindows       map[string]cacheWindowStats  `json:"cache_windows,omitempty"`
 	SessionCache       sessioncache.Stats           `json:"session_cache"`
 	PromptCache        promptcache.Stats            `json:"prompt_cache"`
 	CurrentInputPrefix currentinputmetrics.Snapshot `json:"current_input_prefix"`
@@ -117,6 +118,9 @@ func (h *Handler) getOverviewMetrics(w http.ResponseWriter, _ *http.Request) {
 	if windowSeconds <= 0 {
 		windowSeconds = overviewWindow.Seconds()
 	}
+	cacheStats := h.cacheStats()
+	sessionStats := h.sessionCacheStats()
+	promptStats := h.promptCacheStats()
 	resp := overviewMetricsResponse{
 		Success:       true,
 		CollectedAt:   now.UnixMilli(),
@@ -131,9 +135,10 @@ func (h *Handler) getOverviewMetrics(w http.ResponseWriter, _ *http.Request) {
 		TokenWindows:       h.tokenWindowStats(),
 		Cost:               buildCostBreakdown(stats, now),
 		Host:               collectHostSnapshot(now),
-		Cache:              h.cacheStats(),
-		SessionCache:       h.sessionCacheStats(),
-		PromptCache:        h.promptCacheStats(),
+		Cache:              cacheStats,
+		CacheWindows:       h.cacheWindowStats(now, cacheStats, sessionStats, promptStats),
+		SessionCache:       sessionStats,
+		PromptCache:        promptStats,
 		CurrentInputPrefix: h.currentInputPrefixStats(),
 		History:            h.historyStats(),
 	}

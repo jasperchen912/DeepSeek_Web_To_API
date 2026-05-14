@@ -191,6 +191,32 @@ function promptCacheSurfaceRows(promptCache) {
         .sort((a, b) => b.observed - a.observed || a.label.localeCompare(b.label))
 }
 
+function cacheWindowRows(metrics) {
+    const raw = metrics?.cache_windows && typeof metrics.cache_windows === 'object'
+        ? metrics.cache_windows
+        : {}
+    return ['1m', '5m', '15m']
+        .map(key => {
+            const item = raw[key] || {}
+            const response = item.response_cache || {}
+            const prompt = item.prompt_cache || {}
+            const session = item.session_cache || {}
+            return {
+                key,
+                label: item.label || key,
+                windowSeconds: Number(item.window_seconds) || 0,
+                responseHitRate: Number(response.cacheable_hit_rate ?? response.hit_rate) || 0,
+                responseHits: Number(response.hits) || 0,
+                responseLookups: Number(response.cacheable_lookups) || 0,
+                promptActualHitRate: Number(prompt.actual_hit_rate) || 0,
+                promptActualSamples: Number(prompt.actual_samples) || 0,
+                promptReused: Number(prompt.reused) || 0,
+                sessionCooldowns: Number(session.invalid_session_cooldowns) || 0,
+                sessionBypasses: Number(session.cooldown_bypasses) || 0,
+            }
+        })
+}
+
 function shortHash(value) {
     const text = String(value || '').trim()
     if (!text) return '-'
@@ -462,11 +488,13 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
     const promptSurfaceRows = promptCacheSurfaceRows(promptCache).slice(0, 4)
     const promptMissReasonRows = reasonRows(promptCache.miss_reasons, promptReasonLabel).slice(0, 4)
     const promptIneligibleReasonRows = reasonRows(promptCache.ineligible_reasons, promptReasonLabel).slice(0, 4)
+    const cacheWindowItems = cacheWindowRows(metrics)
     const currentInputPrefix = metrics.current_input_prefix || {}
     const prefixApplied = Number(currentInputPrefix.applied) || 0
     const prefixReused = Number(currentInputPrefix.reused) || 0
     const prefixRefreshes = Number(currentInputPrefix.refreshes) || 0
     const prefixFallbackFullUploads = Number(currentInputPrefix.fallback_full_uploads) || 0
+    const prefixUploadFallbacks = Number(currentInputPrefix.upload_fallbacks) || 0
     const prefixReuseRate = Number(currentInputPrefix.reuse_rate) || 0
     const prefixActiveStates = Number(currentInputPrefix.active_states) || 0
     const prefixTailAvg = Number(currentInputPrefix.tail_chars_avg) || 0
@@ -528,7 +556,7 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
                 <MetricCard icon={Sparkles} label="Prefix 复用率" value={formatPercent(prefixReuseRate)} hint={`${formatNumber(prefixReused)} / ${formatNumber(prefixApplied)} applied · ${formatNumber(prefixActiveStates)} active`} tone="emerald" />
-                <MetricCard icon={Database} label="Checkpoint 刷新" value={formatNumber(prefixRefreshes)} hint={`${formatNumber(prefixFallbackFullUploads)} 次 full upload fallback`} tone="amber" />
+                <MetricCard icon={Database} label="Checkpoint 刷新" value={formatNumber(prefixRefreshes)} hint={`${formatNumber(prefixFallbackFullUploads)} full fallback · ${formatNumber(prefixUploadFallbacks)} upload fallback`} tone="amber" />
                 <MetricCard icon={History} label="Tail 大小" value={formatBytes(prefixTailAvg)} hint={`p95 ${formatBytes(prefixTailP95)} · inline rolling tail`} tone="cyan" />
                 <MetricCard icon={Zap} label="Current Input 耗时" value={formatElapsed(prefixFileMsAvg)} hint={`reuse ${formatElapsed(prefixFileMsReusedAvg)} / refresh ${formatElapsed(prefixFileMsRefreshAvg)}`} />
             </div>
@@ -539,6 +567,39 @@ export default function OverviewContainer({ config, authFetch, onMessage }) {
                 <MetricCard icon={Server} label="Tracker Entries" value={formatNumber(promptEntries)} hint={promptLastHintPresent ? '最近请求带 cache hint' : '最近请求无 cache hint'} tone="amber" />
                 <MetricCard icon={History} label="Prefix 读估算" value={formatNumber(promptReadTokens)} hint={`write ${formatNumber(promptWriteTokens)} est · latest ${promptLastPrefixHash}`} />
             </div>
+
+            {cacheWindowItems.length > 0 && (
+                <div className="ops-panel p-4">
+                    <div className="flex items-center justify-between gap-4">
+                        <div>
+                            <p className="ops-kicker">Cache Windows</p>
+                            <h2 className="ops-heading mt-1">短窗口缓存状态</h2>
+                        </div>
+                        <RadioTower className="w-5 h-5 text-primary" />
+                    </div>
+                    <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+                        {cacheWindowItems.map(item => (
+                            <div key={item.key} className="rounded-lg border border-slate-200 bg-white/80 px-3 py-3 min-w-0">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-xs font-black text-slate-950">{item.label}</span>
+                                    <strong className="text-xs font-black text-cyan-700">{formatPercent(item.responseHitRate)}</strong>
+                                </div>
+                                <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold text-muted-foreground">
+                                    <div>{formatNumber(item.responseHits)} resp hits</div>
+                                    <div>{formatNumber(item.responseLookups)} lookups</div>
+                                    <div>{formatPercent(item.promptActualHitRate)} actual</div>
+                                    <div>{formatNumber(item.promptActualSamples)} samples</div>
+                                    <div>{formatNumber(item.promptReused)} reused</div>
+                                    <div>{formatNumber(item.sessionCooldowns)} cooldown</div>
+                                </div>
+                                {item.sessionBypasses > 0 && (
+                                    <div className="mt-2 truncate text-[10px] font-bold text-cyan-700/80">{formatNumber(item.sessionBypasses)} session bypasses</div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             {promptSurfaceRows.length > 0 && (
                 <div className="ops-panel p-4">

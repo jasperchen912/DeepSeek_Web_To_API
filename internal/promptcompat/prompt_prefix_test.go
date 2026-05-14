@@ -1,6 +1,9 @@
 package promptcompat
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAnalyzeOpenAIPromptPrefixStableAcrossDifferentLastUserMessages(t *testing.T) {
 	t.Parallel()
@@ -71,5 +74,25 @@ func TestAnalyzeOpenAIPromptPrefixSingleUserIsNotEligible(t *testing.T) {
 	}, nil, "", DefaultToolChoicePolicy(), false, "deepseek-v4-flash")
 	if info.Eligible || info.Hash != "" || info.PrefixTokens != 0 || info.Reason != "no_stable_prefix" {
 		t.Fatalf("expected single pure user request to be ineligible, got %#v", info)
+	}
+}
+
+func TestHashPromptTextUsesStableOpaqueDigest(t *testing.T) {
+	t.Parallel()
+
+	first := HashPromptText("stable prefix")
+	second := HashPromptText(" stable prefix ")
+	other := HashPromptText("other prefix")
+	if first == "" || len(first) != 64 {
+		t.Fatalf("expected sha256-sized HMAC digest, got %q", first)
+	}
+	if first != second {
+		t.Fatalf("expected trimmed prompt text to hash consistently: %q %q", first, second)
+	}
+	if first == other {
+		t.Fatal("expected different prompt text to hash differently")
+	}
+	if strings.Contains(first, "stable") {
+		t.Fatalf("digest should not expose prompt text: %q", first)
 	}
 }

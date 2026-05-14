@@ -121,9 +121,9 @@ OpenAI Chat 使用 `messages`；Responses 可能使用 `input` 字符串、数�
 
 Chat Completions 的最终响应和流式结束块会返回标准 OpenAI token 字段，并额外带上部分网关依赖的兼容字段：`prompt_tokens_details`、`completion_tokens_details`、`input`、`output`、`cacheRead`、`cacheWrite`、`totalTokens` 和零值 `cost`。`/v1/models` 中的 DeepSeek 模型也会暴露 `input`、`output` 与零值 `cost` 元数据，避免客户端在按模型计费或读取 token 结构时遇到缺失字段。
 
-OpenAI Chat 与 Responses 会在上游请求之间复用 DeepSeek `chat_session_id`，但这只是远端 session 容器复用：兼容层仍会为每个请求完整归一化 messages/input、重建历史文本、工具提示、文件引用和最终 prompt。普通请求的 completion payload 继续使用 `parent_message_id: nil`，只有空输出 synthetic retry 会沿用现有逻辑把上一条 `response_message_id` 写入 retry payload。
+OpenAI Chat 与 Responses 会在上游请求之间复用 DeepSeek `chat_session_id`，但这只是远端 session 容器复用：兼容层仍会为每个请求完整归一化 messages/input、重建历史文本、工具提示、文件引用和最终 prompt。普通请求的 completion payload 继续使用 `parent_message_id: nil`，只有空输出 synthetic retry 会沿用现有逻辑把上一条 `response_message_id` 写入 retry payload。`current_input_file` 只是长上下文优化路径，默认关闭；只有显式设置 `current_input_file.enabled=true` 时才会把长上下文上传为 DeepSeek 文件。如果 DeepSeek 文件上传出现普通上游失败、大小/配额限制或处理超时，兼容层会记录 `upload_fallbacks` 并回退到原始 inline prompt 继续请求。账号鉴权失败和客户端取消仍会按错误返回。
 
-OpenAI Chat 与 Responses 还会记录 prompt prefix cache 诊断：兼容层根据规范化后的 tools/system/developer/历史消息和最后一条消息之前的内容计算 prefix hash 与估算 token，并在本地 tracker 中判断该 prefix 是否复现。请求体 `prompt_cache_key` 或请求头 `X-DeepSeek-Web-To-API-Prompt-Cache-Key` 只作为诊断 hint 参与 tracker 分组，不会转发 DeepSeek，也不会改变最终 prompt 或完整响应缓存 key。该机制不复用旧答案，也不会把本地估算写入 `prompt_tokens_details.cached_tokens`；只有 DeepSeek 上游真实返回 `prompt_cache_hit_tokens` 时，才会映射到 OpenAI 兼容的 cached token 字段。
+OpenAI Chat 与 Responses 还会记录 prompt prefix cache 诊断：兼容层根据规范化后的 tools/system/developer/历史消息和最后一条消息之前的内容计算 HMAC prefix hash 与估算 token，并在本地 tracker 中判断该 prefix 是否复现。请求体 `prompt_cache_key` 或请求头 `X-DeepSeek-Web-To-API-Prompt-Cache-Key` 只作为诊断 hint 参与 tracker 分组，不会转发 DeepSeek，也不会改变最终 prompt 或完整响应缓存 key。该机制不复用旧答案，也不会把本地估算写入 `prompt_tokens_details.cached_tokens`；只有 DeepSeek 上游真实返回 `prompt_cache_hit_tokens` 时，才会映射到 OpenAI 兼容的 cached token 字段。
 
 流式 Chat Completions 与 Responses 在请求声明 OpenAI `tools` 时会启用 tool sieve；如果没有显式 `tools`，但最终 prompt 中已经存在 DSML/XML tool-call wrapper（例如第三方客户端自行注入的 `<DSML|tool_calls>` 工具协议），流式层同样会缓冲并解析这些工具块。缓冲解析会兼容全角竖线、`▁` 分隔符、中文 wrapper 别名、有界模糊 DSML wrapper、全角 `＞` 终止符和参数内嵌 DSML/CDATA 内容等常见 DSML 变体，避免拆分 chunk 时把 DSML 标签作为普通 assistant 文本发给下游 channel。
 
@@ -133,7 +133,7 @@ Tool-call 输出按 `Detect -> Normalize -> Repair -> Parse` 处理：先确认�
 
 Claude Messages 的 `system`、`messages`、`tools` 和 `tool_result` 需要转换成同一套标准消息。Claude Code 这类客户端依赖稳定流式输出和工具结果不断会话，因此工具历史必须被转写进 prompt-visible 上下文。
 
-Claude Messages direct path 也会进入 prompt prefix cache 诊断并复用 DeepSeek `chat_session_id`。顶层或协议块级 `cache_control` 会被折叠成不含原文的 hint（只包含自动缓存、breakpoint 数量、类型和 TTL），参与本地 tracker 分组；工具 JSON schema 里的普通同名字段不会被当作缓存断点。`cache_control` 本身仍会从最终 prompt 中剥离，也不会转发给 DeepSeek。由于 DeepSeek Web 没有 Claude 的显式 breakpoint API，这里的作用是解释 prefix 稳定性和上游真实 context cache 命中，而不是实现 Claude 原生缓存写入语义。若 DeepSeek 上游真实返回 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，Claude direct 响应会保留这些诊断字段，并仅把 hit tokens 映射为 Claude 的 `cache_read_input_tokens`；miss tokens 不会被伪装成 Claude `cache_creation_input_tokens`。这些真实 hit/miss token 会进入 `prompt_cache.actual_*` 管理台指标，用来和本地 prefix tracker 的估算复用率区分；`prompt_cache.ineligible_reasons` 和 `prompt_cache.miss_reasons` 用于解释无稳定 prefix、TTL 过期、容量淘汰、模型/thinking/search/hint/prefix 改变等命中率问题。
+Claude Messages direct path 也会进入 prompt prefix cache 诊断并复用 DeepSeek `chat_session_id`。顶层或协议块级 `cache_control` 会被折叠成不含原文的 hint（只包含自动缓存、breakpoint 数量、类型和 TTL），参与本地 tracker 分组；工具 JSON schema 里的普通同名字段不会被当作缓存断点。消息块级 breakpoint 会让诊断 prefix 对齐到该消息及其之前的内容，system/tools breakpoint 会优先使用 leading system/tool prompt；没有可用 breakpoint 时回退到“最后一条消息之前”的边界。`cache_control` 本身仍会从最终 prompt 中剥离，也不会转发给 DeepSeek。由于 DeepSeek Web 没有 Claude 的显式 breakpoint API，这里的作用是解释 prefix 稳定性和上游真实 context cache 命中，而不是实现 Claude 原生缓存写入语义。若 DeepSeek 上游真实返回 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，Claude direct 响应会保留这些诊断字段，并仅把 hit tokens 映射为 Claude 的 `cache_read_input_tokens`；miss tokens 不会被伪装成 Claude `cache_creation_input_tokens`。这些真实 hit/miss token 会进入 `prompt_cache.actual_*` 管理台指标，用来和本地 prefix tracker 的估算复用率区分；`prompt_cache.ineligible_reasons` 和 `prompt_cache.miss_reasons` 用于解释无稳定 prefix、TTL 过期、容量淘汰、模型/thinking/search/hint/prefix 改变等命中率问题。
 
 ### Gemini Contents
 
@@ -148,7 +148,7 @@ Gemini 的 `contents.parts` 会被转换为文本、文件和工具上下文。`
 
 - 模型忘记工具调用结果：检查 tool/result 消息是否进入标准消息序列。
 - Claude Code 会话中断：检查流式消息是否被过早 finalize，工具结果是否被识别为独立内容。
-- 文件内容没有进入上下文：检查 `/v1/files` 上传结果和 `current_input_file` 配置。
+- 文件内容没有进入上下文：检查 `/v1/files` 上传结果、`current_input_file` 配置，以及管理台 `current_input_prefix.upload_fallbacks` 是否增长；如果该值增长，说明长上下文文件优化失败后已自动回退到 inline prompt。
 - 输出出现引用噪声：检查 `compat.strip_reference_markers`。
 
 **章节来源**

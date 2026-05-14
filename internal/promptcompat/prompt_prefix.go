@@ -1,10 +1,14 @@
 package promptcompat
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
 	"strings"
+	"sync"
 
 	"DeepSeek_Web_To_API/internal/prompt"
 	"DeepSeek_Web_To_API/internal/util"
@@ -18,21 +22,35 @@ type PromptPrefixInfo struct {
 	Reason       string
 }
 
+var (
+	promptHashSecretOnce sync.Once
+	promptHashSecret     []byte
+)
+
 func AnalyzeOpenAIPromptPrefix(messagesRaw []any, toolsRaw any, traceID string, toolPolicy ToolChoicePolicy, thinkingEnabled bool, model string) PromptPrefixInfo {
 	messages := NormalizeOpenAIMessagesForPrompt(messagesRaw, traceID)
 	if tools, ok := toolsRaw.([]any); ok && len(tools) > 0 {
 		messages, _ = injectToolPrompt(messages, tools, toolPolicy)
 	}
+	return AnalyzePromptPrefixAt(messages, len(messages)-1, thinkingEnabled, model)
+}
+
+func AnalyzePromptPrefixAt(messages []map[string]any, prefixCount int, thinkingEnabled bool, model string) PromptPrefixInfo {
 	if len(messages) < 2 {
 		return PromptPrefixInfo{Reason: "no_stable_prefix"}
 	}
-	prefixMessages := clonePromptMessages(messages[:len(messages)-1])
-	tailMessage := messages[len(messages)-1]
+	if prefixCount <= 0 || prefixCount > len(messages) {
+		return PromptPrefixInfo{Reason: "no_stable_prefix"}
+	}
+	prefixMessages := clonePromptMessages(messages[:prefixCount])
 	prefixText := strings.TrimSpace(prompt.MessagesPrepareWithThinking(prefixMessages, thinkingEnabled))
 	if prefixText == "" {
 		return PromptPrefixInfo{Reason: "no_stable_prefix"}
 	}
-	tailText := strings.TrimSpace(prompt.NormalizeContent(tailMessage["content"]))
+	tailText := ""
+	if prefixCount < len(messages) {
+		tailText = strings.TrimSpace(prompt.MessagesPrepareWithThinking(messages[prefixCount:], thinkingEnabled))
+	}
 	return PromptPrefixInfo{
 		Hash:         promptPrefixHash(prefixMessages, thinkingEnabled),
 		PrefixTokens: util.CountPromptTokens(prefixText, model),
@@ -55,7 +73,7 @@ func sanitizePromptCacheHint(value string) string {
 }
 
 func promptPrefixHash(messages []map[string]any, thinkingEnabled bool) string {
-	h := sha256.New()
+	h := hmac.New(sha256.New, promptHashSecretBytes())
 	writePromptPrefixPart(h, "v1")
 	if thinkingEnabled {
 		writePromptPrefixPart(h, "thinking:1")
@@ -65,6 +83,32 @@ func promptPrefixHash(messages []map[string]any, thinkingEnabled bool) string {
 	encoder := json.NewEncoder(h)
 	_ = encoder.Encode(messages)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func HashPromptText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	h := hmac.New(sha256.New, promptHashSecretBytes())
+	writePromptPrefixPart(h, "text:v1")
+	writePromptPrefixPart(h, text)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func promptHashSecretBytes() []byte {
+	promptHashSecretOnce.Do(func() {
+		if configured := strings.TrimSpace(os.Getenv("DEEPSEEK_WEB_TO_API_PROMPT_HASH_KEY")); configured != "" {
+			promptHashSecret = []byte(configured)
+			return
+		}
+		promptHashSecret = make([]byte, 32)
+		if _, err := rand.Read(promptHashSecret); err != nil {
+			sum := sha256.Sum256([]byte("deepseek-web-to-api-prompt-hash-fallback"))
+			promptHashSecret = append([]byte(nil), sum[:]...)
+		}
+	})
+	return promptHashSecret
 }
 
 func clonePromptMessages(in []map[string]any) []map[string]any {

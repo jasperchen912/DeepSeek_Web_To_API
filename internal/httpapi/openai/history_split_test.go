@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"DeepSeek_Web_To_API/internal/auth"
+	"DeepSeek_Web_To_API/internal/currentinputmetrics"
 	dsclient "DeepSeek_Web_To_API/internal/deepseek/client"
 	openaishared "DeepSeek_Web_To_API/internal/httpapi/openai/shared"
 	"DeepSeek_Web_To_API/internal/promptcompat"
@@ -721,7 +722,9 @@ func TestResponsesCurrentInputFileMapsDirectAuthFailureTo401(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsCurrentInputFileUploadFailureReturnsInternalServerError(t *testing.T) {
+func TestChatCompletionsCurrentInputFileUploadFailureFallsBackToInlinePrompt(t *testing.T) {
+	currentinputmetrics.ResetForTest()
+	t.Cleanup(currentinputmetrics.ResetForTest)
 	ds := &inlineUploadDSStub{uploadErr: errors.New("boom")}
 	h := &openAITestSurface{
 		Store: mockOpenAIConfig{
@@ -743,8 +746,25 @@ func TestChatCompletionsCurrentInputFileUploadFailureReturnsInternalServerError(
 
 	h.ChatCompletions(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 fallback, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(ds.uploadCalls) != 1 {
+		t.Fatalf("expected one failed upload attempt, got %d", len(ds.uploadCalls))
+	}
+	if ds.completionReq == nil {
+		t.Fatal("expected completion call after upload fallback")
+	}
+	promptText, _ := ds.completionReq["prompt"].(string)
+	if !strings.Contains(promptText, "first user turn") || !strings.Contains(promptText, "latest user turn") {
+		t.Fatalf("expected original prompt to be preserved after fallback, got %q", promptText)
+	}
+	refFileIDs, _ := ds.completionReq["ref_file_ids"].([]any)
+	if len(refFileIDs) != 0 {
+		t.Fatalf("expected no ref files after upload fallback, got %#v", refFileIDs)
+	}
+	if got := currentinputmetrics.GetSnapshot().UploadFallbacks; got != 1 {
+		t.Fatalf("expected upload fallback metric, got %d", got)
 	}
 }
 

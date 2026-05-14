@@ -10,6 +10,7 @@ const maxTailSamples = 4096
 
 type Sample struct {
 	Applied           bool
+	UploadFallback    bool
 	PrefixReused      bool
 	CheckpointRefresh bool
 	PrefixHash        string
@@ -21,6 +22,7 @@ type Sample struct {
 
 type Snapshot struct {
 	Applied                      int64   `json:"applied"`
+	UploadFallbacks              int64   `json:"upload_fallbacks"`
 	Reused                       int64   `json:"reused"`
 	Refreshes                    int64   `json:"refreshes"`
 	FallbackFullUploads          int64   `json:"fallback_full_uploads"`
@@ -35,6 +37,7 @@ type Snapshot struct {
 	CurrentInputFileMsRefreshAvg int64   `json:"current_input_file_ms_refresh_avg"`
 	LastPrefixHash               string  `json:"last_prefix_hash,omitempty"`
 	LastReused                   bool    `json:"last_reused"`
+	LastUploadFallback           bool    `json:"last_upload_fallback"`
 	LastTailChars                int     `json:"last_tail_chars"`
 }
 
@@ -42,6 +45,7 @@ type recorder struct {
 	mu sync.Mutex
 
 	applied             int64
+	uploadFallbacks     int64
 	reused              int64
 	refreshes           int64
 	fallbackFullUploads int64
@@ -57,21 +61,29 @@ type recorder struct {
 
 	tailSamples []int
 
-	lastPrefixHash string
-	lastReused     bool
-	lastTailChars  int
-	activeStates   int64
+	lastPrefixHash     string
+	lastReused         bool
+	lastUploadFallback bool
+	lastTailChars      int
+	activeStates       int64
 }
 
 var global recorder
 
 func Record(sample Sample) {
-	if !sample.Applied {
+	if !sample.Applied && !sample.UploadFallback {
 		return
 	}
 	global.mu.Lock()
 	defer global.mu.Unlock()
 
+	global.lastUploadFallback = sample.UploadFallback
+	if sample.UploadFallback {
+		global.uploadFallbacks++
+		if !sample.Applied {
+			return
+		}
+	}
 	global.applied++
 	if sample.PrefixReused {
 		global.reused++
@@ -118,6 +130,7 @@ func GetSnapshot() Snapshot {
 func ResetForTest() {
 	global.mu.Lock()
 	global.applied = 0
+	global.uploadFallbacks = 0
 	global.reused = 0
 	global.refreshes = 0
 	global.fallbackFullUploads = 0
@@ -132,6 +145,7 @@ func ResetForTest() {
 	global.tailSamples = nil
 	global.lastPrefixHash = ""
 	global.lastReused = false
+	global.lastUploadFallback = false
 	global.lastTailChars = 0
 	global.activeStates = 0
 	global.mu.Unlock()
@@ -140,12 +154,14 @@ func ResetForTest() {
 func (r *recorder) snapshotLocked() Snapshot {
 	out := Snapshot{
 		Applied:             r.applied,
+		UploadFallbacks:     r.uploadFallbacks,
 		Reused:              r.reused,
 		Refreshes:           r.refreshes,
 		FallbackFullUploads: r.fallbackFullUploads,
 		ActiveStates:        r.activeStates,
 		LastPrefixHash:      r.lastPrefixHash,
 		LastReused:          r.lastReused,
+		LastUploadFallback:  r.lastUploadFallback,
 		LastTailChars:       r.lastTailChars,
 	}
 	if r.applied > 0 {

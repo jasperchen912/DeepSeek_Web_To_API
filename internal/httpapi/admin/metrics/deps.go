@@ -12,6 +12,7 @@ type Handler struct {
 	ResponseCache adminshared.ResponseCacheStatsProvider
 	SessionCache  adminshared.SessionCacheStatsProvider
 	PromptCache   adminshared.PromptCacheStatsProvider
+	cacheWindows  *cacheWindowSampler
 }
 
 var writeJSON = adminshared.WriteJSON
